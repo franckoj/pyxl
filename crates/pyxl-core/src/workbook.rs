@@ -186,6 +186,48 @@ impl Workbook {
         }
     }
 
+    pub fn index_of(&self, title: &str) -> Option<usize> {
+        self.sheets.iter().position(|s| s.title == title)
+    }
+
+    pub fn copy_worksheet(&mut self, from_title: &str) -> PyxlResult<&mut Worksheet> {
+        let source_ws = self
+            .get_sheet(from_title)
+            .ok_or_else(|| PyxlError::SheetNotFound(from_title.to_string()))?
+            .clone();
+
+        let copy_title = self.generate_unique_copy_name(&source_ws.title);
+        let mut new_ws = source_ws;
+        new_ws.set_title(&copy_title)?;
+
+        self.sheets.push(new_ws);
+        Ok(self.sheets.last_mut().expect("just pushed"))
+    }
+
+    fn generate_unique_copy_name(&self, base_title: &str) -> String {
+        let first_candidate = format!("{} Copy", base_title);
+        if !self
+            .sheets
+            .iter()
+            .any(|s| s.title.eq_ignore_ascii_case(&first_candidate))
+        {
+            return first_candidate;
+        }
+
+        let mut idx = 1;
+        loop {
+            let candidate = format!("{} Copy{}", base_title, idx);
+            if !self
+                .sheets
+                .iter()
+                .any(|s| s.title.eq_ignore_ascii_case(&candidate))
+            {
+                return candidate;
+            }
+            idx += 1;
+        }
+    }
+
     pub fn sheets(&self) -> &[Worksheet] {
         &self.sheets
     }
@@ -198,6 +240,7 @@ impl Workbook {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cell::CellValue;
 
     #[test]
     fn test_workbook_default() {
@@ -239,5 +282,30 @@ mod tests {
         let mut wb = Workbook::new();
         assert!(wb.create_sheet(Some("Sheet"), None).is_err());
         assert!(wb.create_sheet(Some("sheet"), None).is_err());
+    }
+
+    #[test]
+    fn test_copy_worksheet_and_index() {
+        let mut wb = Workbook::new();
+        wb.active_mut()
+            .set_cell_value(1, 1, CellValue::String("hello".to_string()))
+            .unwrap();
+
+        assert_eq!(wb.index_of("Sheet"), Some(0));
+        assert_eq!(wb.index_of("NonExistent"), None);
+
+        let copied = wb.copy_worksheet("Sheet").unwrap();
+        assert_eq!(copied.title, "Sheet Copy");
+        assert_eq!(
+            copied.get_cell_value(1, 1),
+            CellValue::String("hello".to_string())
+        );
+
+        let copied2 = wb.copy_worksheet("Sheet").unwrap();
+        assert_eq!(copied2.title, "Sheet Copy1");
+
+        assert_eq!(wb.sheetnames(), vec!["Sheet", "Sheet Copy", "Sheet Copy1"]);
+        assert_eq!(wb.index_of("Sheet Copy"), Some(1));
+        assert_eq!(wb.index_of("Sheet Copy1"), Some(2));
     }
 }

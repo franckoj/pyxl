@@ -66,11 +66,21 @@ pub struct Cell {
     pub row: u32,
     pub column: u32,
     pub value: CellValue,
+    pub number_format: Option<String>,
+    pub comment: Option<String>,
+    pub hyperlink: Option<String>,
 }
 
 impl Cell {
     pub fn new(row: u32, column: u32, value: CellValue) -> Self {
-        Self { row, column, value }
+        Self {
+            row,
+            column,
+            value,
+            number_format: None,
+            comment: None,
+            hyperlink: None,
+        }
     }
 
     pub fn coordinate(&self) -> PyxlResult<String> {
@@ -83,6 +93,10 @@ impl Cell {
 
     pub fn data_type(&self) -> &'static str {
         self.value.data_type()
+    }
+
+    pub fn is_date(&self) -> bool {
+        matches!(self.value, CellValue::Date(_) | CellValue::DateTime(_))
     }
 }
 

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use pyo3::exceptions::{PyAttributeError, PyIndexError, PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyFloat, PyInt, PyList, PyString, PyTuple};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PySlice, PyString, PyTuple};
 
 use pyxl_core::cell::CellValue;
 use pyxl_core::coordinate::{
@@ -91,10 +91,24 @@ pub fn cell_value_to_python<'py>(py: Python<'py>, val: &CellValue) -> PyResult<B
         CellValue::Int(i) => Ok(i.to_object(py).into_bound(py)),
         CellValue::Float(f) => Ok(f.to_object(py).into_bound(py)),
         CellValue::Bool(b) => Ok(b.to_object(py).into_bound(py)),
-        CellValue::Date(d) => date_str_to_pydatetime(py, d),
+        CellValue::Date(d) => date_str_to_pydate(py, d),
         CellValue::DateTime(dt) => date_str_to_pydatetime(py, dt),
         CellValue::Formula { formula, .. } => Ok(formula.to_object(py).into_bound(py)),
     }
+}
+
+fn date_str_to_pydate<'py>(py: Python<'py>, s: &str) -> PyResult<Bound<'py, PyAny>> {
+    if s.len() >= 10 && s.as_bytes()[4] == b'-' && s.as_bytes()[7] == b'-' {
+        let year: i32 = s[0..4].parse().unwrap_or(1970);
+        let month: u8 = s[5..7].parse().unwrap_or(1);
+        let day: u8 = s[8..10].parse().unwrap_or(1);
+        let dt_mod = py.import_bound("datetime")?;
+        let date_cls = dt_mod.getattr("date")?;
+        if let Ok(d) = date_cls.call1((year, month, day)) {
+            return Ok(d);
+        }
+    }
+    Ok(s.to_object(py).into_bound(py))
 }
 
 fn date_str_to_pydatetime<'py>(py: Python<'py>, s: &str) -> PyResult<Bound<'py, PyAny>> {
@@ -158,6 +172,110 @@ impl PyCell {
     }
 
     #[getter]
+    pub fn parent(&self) -> PyWorksheet {
+        PyWorksheet {
+            wb: Arc::clone(&self.wb),
+            sheet_title: Arc::clone(&self.sheet_title),
+        }
+    }
+
+    #[getter]
+    pub fn is_date(&self) -> PyResult<bool> {
+        let wb = self.wb.read();
+        let title = self.sheet_title.read().clone();
+        let ws = wb
+            .get_sheet(&title)
+            .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+            .map_err(map_pyxl_err)?;
+        let val = ws.get_cell_value(self.row, self.column);
+        Ok(matches!(val, CellValue::Date(_) | CellValue::DateTime(_)))
+    }
+
+    #[getter]
+    pub fn number_format(&self) -> PyResult<String> {
+        let wb = self.wb.read();
+        let title = self.sheet_title.read().clone();
+        let ws = wb
+            .get_sheet(&title)
+            .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+            .map_err(map_pyxl_err)?;
+        if let Some(c) = ws.get_cell(self.row, self.column) {
+            if let Some(ref nf) = c.number_format {
+                return Ok(nf.clone());
+            }
+            if let CellValue::Date(_) = c.value {
+                return Ok("yyyy-mm-dd".to_string());
+            }
+            if let CellValue::DateTime(_) = c.value {
+                return Ok("yyyy-mm-dd h:mm:ss".to_string());
+            }
+        }
+        Ok("General".to_string())
+    }
+
+    #[setter]
+    pub fn set_number_format(&self, fmt: Option<String>) -> PyResult<()> {
+        let mut wb = self.wb.write();
+        let title = self.sheet_title.read().clone();
+        let ws = wb
+            .get_sheet_mut(&title)
+            .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+            .map_err(map_pyxl_err)?;
+        ws.set_cell_number_format(self.row, self.column, fmt)
+            .map_err(map_pyxl_err)
+    }
+
+    #[getter]
+    pub fn comment(&self) -> PyResult<Option<String>> {
+        let wb = self.wb.read();
+        let title = self.sheet_title.read().clone();
+        let ws = wb
+            .get_sheet(&title)
+            .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+            .map_err(map_pyxl_err)?;
+        Ok(ws
+            .get_cell(self.row, self.column)
+            .and_then(|c| c.comment.clone()))
+    }
+
+    #[setter]
+    pub fn set_comment(&self, c: Option<String>) -> PyResult<()> {
+        let mut wb = self.wb.write();
+        let title = self.sheet_title.read().clone();
+        let ws = wb
+            .get_sheet_mut(&title)
+            .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+            .map_err(map_pyxl_err)?;
+        ws.set_cell_comment(self.row, self.column, c)
+            .map_err(map_pyxl_err)
+    }
+
+    #[getter]
+    pub fn hyperlink(&self) -> PyResult<Option<String>> {
+        let wb = self.wb.read();
+        let title = self.sheet_title.read().clone();
+        let ws = wb
+            .get_sheet(&title)
+            .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+            .map_err(map_pyxl_err)?;
+        Ok(ws
+            .get_cell(self.row, self.column)
+            .and_then(|c| c.hyperlink.clone()))
+    }
+
+    #[setter]
+    pub fn set_hyperlink(&self, h: Option<String>) -> PyResult<()> {
+        let mut wb = self.wb.write();
+        let title = self.sheet_title.read().clone();
+        let ws = wb
+            .get_sheet_mut(&title)
+            .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+            .map_err(map_pyxl_err)?;
+        ws.set_cell_hyperlink(self.row, self.column, h)
+            .map_err(map_pyxl_err)
+    }
+
+    #[getter]
     pub fn data_type(&self) -> PyResult<&'static str> {
         let wb = self.wb.read();
         let title = self.sheet_title.read().clone();
@@ -167,6 +285,33 @@ impl PyCell {
             .map_err(map_pyxl_err)?;
         let val = ws.get_cell_value(self.row, self.column);
         Ok(val.data_type())
+    }
+
+    #[setter]
+    pub fn set_data_type(&self, dt: &str) -> PyResult<()> {
+        let mut wb = self.wb.write();
+        let title = self.sheet_title.read().clone();
+        let ws = wb
+            .get_sheet_mut(&title)
+            .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+            .map_err(map_pyxl_err)?;
+        let cell = ws
+            .get_or_create_cell(self.row, self.column)
+            .map_err(map_pyxl_err)?;
+        if dt == "s" {
+            let cur_str = match &cell.value {
+                CellValue::String(s) => s.clone(),
+                CellValue::Int(i) => i.to_string(),
+                CellValue::Float(f) => f.to_string(),
+                CellValue::Bool(b) => b.to_string(),
+                CellValue::Date(d) => d.clone(),
+                CellValue::DateTime(dt) => dt.clone(),
+                CellValue::Formula { formula, .. } => formula.clone(),
+                CellValue::Empty => String::new(),
+            };
+            cell.value = CellValue::String(cur_str);
+        }
+        Ok(())
     }
 
     #[getter]
@@ -211,6 +356,13 @@ pub struct PyWorksheet {
 
 #[pymethods]
 impl PyWorksheet {
+    #[getter]
+    pub fn parent(&self) -> PyWorkbook {
+        PyWorkbook {
+            wb: Arc::clone(&self.wb),
+        }
+    }
+
     #[getter]
     pub fn title(&self) -> String {
         self.sheet_title.read().clone()
@@ -288,6 +440,12 @@ impl PyWorksheet {
         column: u32,
         value: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyCell> {
+        if row < 1 || column < 1 {
+            return Err(PyValueError::new_err(
+                "Row or column values must be at least 1",
+            ));
+        }
+
         {
             let mut wb = self.wb.write();
             let title = self.sheet_title.read().clone();
@@ -318,18 +476,22 @@ impl PyWorksheet {
         py: Python<'py>,
         key: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        // 1. Integer row: ws[1]
         if let Ok(r) = key.extract::<u32>() {
-            let max_c = {
+            if r < 1 {
+                return Err(PyValueError::new_err("Row values must be at least 1"));
+            }
+            let (min_c, max_c) = {
                 let wb = self.wb.read();
                 let title = self.sheet_title.read().clone();
                 let ws = wb
                     .get_sheet(&title)
                     .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
                     .map_err(map_pyxl_err)?;
-                ws.max_column().max(1)
+                (ws.min_column().max(1), ws.max_column().max(1))
             };
-            let mut inner_cols = Vec::with_capacity(max_c as usize);
-            for c in 1..=max_c {
+            let mut inner_cols = Vec::with_capacity((max_c - min_c + 1) as usize);
+            for c in min_c..=max_c {
                 let cell = Bound::new(
                     py,
                     PyCell {
@@ -344,28 +506,234 @@ impl PyWorksheet {
             return Ok(PyTuple::new_bound(py, inner_cols).into_any());
         }
 
+        // 2. PySlice: ws[1:5], ws["A":"C"], ws["A1":"B2"]
+        if let Ok(slice) = key.downcast::<PySlice>() {
+            let start = slice.getattr("start")?;
+            let stop = slice.getattr("stop")?;
+
+            if let (Ok(r1), Ok(r2)) = (start.extract::<u32>(), stop.extract::<u32>()) {
+                let min_r = r1.min(r2).max(1);
+                let max_r = r1.max(r2);
+                let (min_c, max_c) = {
+                    let wb = self.wb.read();
+                    let title = self.sheet_title.read().clone();
+                    let ws = wb
+                        .get_sheet(&title)
+                        .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+                        .map_err(map_pyxl_err)?;
+                    (ws.min_column().max(1), ws.max_column().max(1))
+                };
+                let mut outer_rows = Vec::with_capacity((max_r - min_r + 1) as usize);
+                for r in min_r..=max_r {
+                    let mut inner_cols = Vec::with_capacity((max_c - min_c + 1) as usize);
+                    for c in min_c..=max_c {
+                        let cell = Bound::new(
+                            py,
+                            PyCell {
+                                wb: Arc::clone(&self.wb),
+                                sheet_title: Arc::clone(&self.sheet_title),
+                                row: r,
+                                column: c,
+                            },
+                        )?;
+                        inner_cols.push(cell.into_any());
+                    }
+                    outer_rows.push(PyTuple::new_bound(py, inner_cols));
+                }
+                return Ok(PyTuple::new_bound(py, outer_rows).into_any());
+            }
+
+            if let (Ok(s1), Ok(s2)) = (start.extract::<String>(), stop.extract::<String>()) {
+                if s1.chars().all(|c| c.is_ascii_alphabetic())
+                    && s2.chars().all(|c| c.is_ascii_alphabetic())
+                {
+                    let c1 = pyxl_core::coordinate::column_index_from_string(&s1)
+                        .map_err(map_pyxl_err)?;
+                    let c2 = pyxl_core::coordinate::column_index_from_string(&s2)
+                        .map_err(map_pyxl_err)?;
+                    let min_c = c1.min(c2);
+                    let max_c = c1.max(c2);
+                    let (min_r, max_r) = {
+                        let wb = self.wb.read();
+                        let title = self.sheet_title.read().clone();
+                        let ws = wb
+                            .get_sheet(&title)
+                            .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+                            .map_err(map_pyxl_err)?;
+                        (ws.min_row().max(1), ws.max_row().max(1))
+                    };
+                    let mut outer_cols = Vec::with_capacity((max_c - min_c + 1) as usize);
+                    for c in min_c..=max_c {
+                        let mut inner_rows = Vec::with_capacity((max_r - min_r + 1) as usize);
+                        for r in min_r..=max_r {
+                            let cell = Bound::new(
+                                py,
+                                PyCell {
+                                    wb: Arc::clone(&self.wb),
+                                    sheet_title: Arc::clone(&self.sheet_title),
+                                    row: r,
+                                    column: c,
+                                },
+                            )?;
+                            inner_rows.push(cell.into_any());
+                        }
+                        outer_cols.push(PyTuple::new_bound(py, inner_rows));
+                    }
+                    return Ok(PyTuple::new_bound(py, outer_cols).into_any());
+                } else {
+                    let (r1, c1) = coordinate_to_tuple(&s1).map_err(map_pyxl_err)?;
+                    let (r2, c2) = coordinate_to_tuple(&s2).map_err(map_pyxl_err)?;
+                    let min_r = r1.min(r2);
+                    let max_r = r1.max(r2);
+                    let min_c = c1.min(c2);
+                    let max_c = c1.max(c2);
+                    let mut outer_rows = Vec::with_capacity((max_r - min_r + 1) as usize);
+                    for r in min_r..=max_r {
+                        let mut inner_cols = Vec::with_capacity((max_c - min_c + 1) as usize);
+                        for c in min_c..=max_c {
+                            let cell = Bound::new(
+                                py,
+                                PyCell {
+                                    wb: Arc::clone(&self.wb),
+                                    sheet_title: Arc::clone(&self.sheet_title),
+                                    row: r,
+                                    column: c,
+                                },
+                            )?;
+                            inner_cols.push(cell.into_any());
+                        }
+                        outer_rows.push(PyTuple::new_bound(py, inner_cols));
+                    }
+                    return Ok(PyTuple::new_bound(py, outer_rows).into_any());
+                }
+            }
+        }
+
+        // 3. String key
         let key_str = key.extract::<String>()?;
         if key_str.contains(':') {
-            let (min_r, min_c, max_r, max_c) = range_boundaries(&key_str).map_err(map_pyxl_err)?;
-            let mut outer_rows = Vec::with_capacity((max_r - min_r + 1) as usize);
-
-            for r in min_r..=max_r {
-                let mut inner_cols = Vec::with_capacity((max_c - min_c + 1) as usize);
-                for c in min_c..=max_c {
-                    let cell = Bound::new(
-                        py,
-                        PyCell {
-                            wb: Arc::clone(&self.wb),
-                            sheet_title: Arc::clone(&self.sheet_title),
-                            row: r,
-                            column: c,
-                        },
-                    )?;
-                    inner_cols.push(cell.into_any());
+            let parts: Vec<&str> = key_str.split(':').collect();
+            if parts.len() == 2
+                && parts[0].chars().all(|c| c.is_ascii_digit())
+                && parts[1].chars().all(|c| c.is_ascii_digit())
+            {
+                let r1: u32 = parts[0].parse().unwrap_or(1);
+                let r2: u32 = parts[1].parse().unwrap_or(1);
+                let min_r = r1.min(r2).max(1);
+                let max_r = r1.max(r2);
+                let (min_c, max_c) = {
+                    let wb = self.wb.read();
+                    let title = self.sheet_title.read().clone();
+                    let ws = wb
+                        .get_sheet(&title)
+                        .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+                        .map_err(map_pyxl_err)?;
+                    (ws.min_column().max(1), ws.max_column().max(1))
+                };
+                let mut outer_rows = Vec::with_capacity((max_r - min_r + 1) as usize);
+                for r in min_r..=max_r {
+                    let mut inner_cols = Vec::with_capacity((max_c - min_c + 1) as usize);
+                    for c in min_c..=max_c {
+                        let cell = Bound::new(
+                            py,
+                            PyCell {
+                                wb: Arc::clone(&self.wb),
+                                sheet_title: Arc::clone(&self.sheet_title),
+                                row: r,
+                                column: c,
+                            },
+                        )?;
+                        inner_cols.push(cell.into_any());
+                    }
+                    outer_rows.push(PyTuple::new_bound(py, inner_cols));
                 }
-                outer_rows.push(PyTuple::new_bound(py, inner_cols));
+                Ok(PyTuple::new_bound(py, outer_rows).into_any())
+            } else if parts.len() == 2
+                && parts[0].chars().all(|c| c.is_ascii_alphabetic())
+                && parts[1].chars().all(|c| c.is_ascii_alphabetic())
+            {
+                let c1 = pyxl_core::coordinate::column_index_from_string(parts[0])
+                    .map_err(map_pyxl_err)?;
+                let c2 = pyxl_core::coordinate::column_index_from_string(parts[1])
+                    .map_err(map_pyxl_err)?;
+                let min_c = c1.min(c2);
+                let max_c = c1.max(c2);
+                let (min_r, max_r) = {
+                    let wb = self.wb.read();
+                    let title = self.sheet_title.read().clone();
+                    let ws = wb
+                        .get_sheet(&title)
+                        .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+                        .map_err(map_pyxl_err)?;
+                    (ws.min_row().max(1), ws.max_row().max(1))
+                };
+                let mut outer_cols = Vec::with_capacity((max_c - min_c + 1) as usize);
+                for c in min_c..=max_c {
+                    let mut inner_rows = Vec::with_capacity((max_r - min_r + 1) as usize);
+                    for r in min_r..=max_r {
+                        let cell = Bound::new(
+                            py,
+                            PyCell {
+                                wb: Arc::clone(&self.wb),
+                                sheet_title: Arc::clone(&self.sheet_title),
+                                row: r,
+                                column: c,
+                            },
+                        )?;
+                        inner_rows.push(cell.into_any());
+                    }
+                    outer_cols.push(PyTuple::new_bound(py, inner_rows));
+                }
+                Ok(PyTuple::new_bound(py, outer_cols).into_any())
+            } else {
+                let (min_r, min_c, max_r, max_c) =
+                    range_boundaries(&key_str).map_err(map_pyxl_err)?;
+                let mut outer_rows = Vec::with_capacity((max_r - min_r + 1) as usize);
+
+                for r in min_r..=max_r {
+                    let mut inner_cols = Vec::with_capacity((max_c - min_c + 1) as usize);
+                    for c in min_c..=max_c {
+                        let cell = Bound::new(
+                            py,
+                            PyCell {
+                                wb: Arc::clone(&self.wb),
+                                sheet_title: Arc::clone(&self.sheet_title),
+                                row: r,
+                                column: c,
+                            },
+                        )?;
+                        inner_cols.push(cell.into_any());
+                    }
+                    outer_rows.push(PyTuple::new_bound(py, inner_cols));
+                }
+                Ok(PyTuple::new_bound(py, outer_rows).into_any())
             }
-            Ok(PyTuple::new_bound(py, outer_rows).into_any())
+        } else if key_str.chars().all(|c| c.is_ascii_alphabetic()) {
+            let col =
+                pyxl_core::coordinate::column_index_from_string(&key_str).map_err(map_pyxl_err)?;
+            let (min_r, max_r) = {
+                let wb = self.wb.read();
+                let title = self.sheet_title.read().clone();
+                let ws = wb
+                    .get_sheet(&title)
+                    .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+                    .map_err(map_pyxl_err)?;
+                (ws.min_row().max(1), ws.max_row().max(1))
+            };
+            let mut col_cells = Vec::with_capacity((max_r - min_r + 1) as usize);
+            for r in min_r..=max_r {
+                let cell = Bound::new(
+                    py,
+                    PyCell {
+                        wb: Arc::clone(&self.wb),
+                        sheet_title: Arc::clone(&self.sheet_title),
+                        row: r,
+                        column: col,
+                    },
+                )?;
+                col_cells.push(cell.into_any());
+            }
+            Ok(PyTuple::new_bound(py, col_cells).into_any())
         } else {
             let (r, c) = coordinate_to_tuple(&key_str).map_err(map_pyxl_err)?;
             {
@@ -404,6 +772,42 @@ impl PyWorksheet {
     }
 
     pub fn append(&self, iterable: &Bound<'_, PyAny>) -> PyResult<u32> {
+        if let Ok(dict) = iterable.downcast::<PyDict>() {
+            let mut col_vals: Vec<(u32, CellValue)> = Vec::new();
+            for (k, v) in dict.iter() {
+                let col_idx: u32 = if let Ok(col_num) = k.extract::<u32>() {
+                    if col_num < 1 {
+                        return Err(PyValueError::new_err("Column values must be at least 1"));
+                    }
+                    col_num
+                } else if let Ok(col_str) = k.extract::<String>() {
+                    pyxl_core::coordinate::column_index_from_string(&col_str)
+                        .map_err(map_pyxl_err)?
+                } else {
+                    return Err(PyTypeError::new_err(
+                        "Dict keys in append must be column letters or integer column numbers",
+                    ));
+                };
+                let val = python_value_to_cell_value(&v)?;
+                col_vals.push((col_idx, val));
+            }
+            col_vals.sort_by_key(|(col, _)| *col);
+            let max_c = col_vals.iter().map(|(c, _)| *c).max().unwrap_or(0);
+            let mut full_row = vec![CellValue::Empty; max_c as usize];
+            for (c, val) in col_vals {
+                if c >= 1 && (c as usize) <= full_row.len() {
+                    full_row[(c - 1) as usize] = val;
+                }
+            }
+            let mut wb = self.wb.write();
+            let title = self.sheet_title.read().clone();
+            let ws = wb
+                .get_sheet_mut(&title)
+                .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+                .map_err(map_pyxl_err)?;
+            return ws.append(full_row).map_err(map_pyxl_err);
+        }
+
         let mut values = Vec::new();
         for item in iterable.iter()? {
             let item_val = item?;
@@ -429,17 +833,27 @@ impl PyWorksheet {
         max_col: Option<u32>,
         values_only: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let (r_start, r_end, c_start, c_end) = {
+        let (is_empty, (r_start, r_end, c_start, c_end)) = {
             let wb = self.wb.read();
             let title = self.sheet_title.read().clone();
             let ws = wb
                 .get_sheet(&title)
                 .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
                 .map_err(map_pyxl_err)?;
-            ws.resolve_bounds(min_row, max_row, min_col, max_col)
+            (
+                ws.is_empty(),
+                ws.resolve_bounds(min_row, max_row, min_col, max_col),
+            )
         };
 
-        if r_start > r_end || c_start > c_end {
+        if (is_empty
+            && min_row.is_none()
+            && max_row.is_none()
+            && min_col.is_none()
+            && max_col.is_none())
+            || r_start > r_end
+            || c_start > c_end
+        {
             return Ok(PyList::empty_bound(py).into_any());
         }
 
@@ -485,27 +899,37 @@ impl PyWorksheet {
         Ok(py_list.into_any())
     }
 
-    #[pyo3(signature = (min_row=None, max_row=None, min_col=None, max_col=None, values_only=false))]
+    #[pyo3(signature = (min_col=None, max_col=None, min_row=None, max_row=None, values_only=false))]
     pub fn iter_cols<'py>(
         &self,
         py: Python<'py>,
-        min_row: Option<u32>,
-        max_row: Option<u32>,
         min_col: Option<u32>,
         max_col: Option<u32>,
+        min_row: Option<u32>,
+        max_row: Option<u32>,
         values_only: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let (r_start, r_end, c_start, c_end) = {
+        let (is_empty, (r_start, r_end, c_start, c_end)) = {
             let wb = self.wb.read();
             let title = self.sheet_title.read().clone();
             let ws = wb
                 .get_sheet(&title)
                 .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
                 .map_err(map_pyxl_err)?;
-            ws.resolve_bounds(min_row, max_row, min_col, max_col)
+            (
+                ws.is_empty(),
+                ws.resolve_bounds(min_row, max_row, min_col, max_col),
+            )
         };
 
-        if r_start > r_end || c_start > c_end {
+        if (is_empty
+            && min_row.is_none()
+            && max_row.is_none()
+            && min_col.is_none()
+            && max_col.is_none())
+            || r_start > r_end
+            || c_start > c_end
+        {
             return Ok(PyList::empty_bound(py).into_any());
         }
 
@@ -653,6 +1077,32 @@ impl PyWorkbook {
         Ok(PyWorksheet {
             wb: Arc::clone(&self.wb),
             sheet_title: Arc::new(RwLock::new(sheet_title)),
+        })
+    }
+
+    pub fn copy_worksheet(&self, worksheet: &Bound<'_, PyWorksheet>) -> PyResult<PyWorksheet> {
+        let from_title = worksheet.borrow().sheet_title.read().clone();
+        let mut wb = self.wb.write();
+        let ws = wb.copy_worksheet(&from_title).map_err(map_pyxl_err)?;
+        let sheet_title = ws.title.clone();
+        Ok(PyWorksheet {
+            wb: Arc::clone(&self.wb),
+            sheet_title: Arc::new(RwLock::new(sheet_title)),
+        })
+    }
+
+    pub fn index(&self, worksheet: &Bound<'_, PyWorksheet>) -> PyResult<usize> {
+        let ws = worksheet.borrow();
+        if !Arc::ptr_eq(&self.wb, &ws.wb) {
+            return Err(PyValueError::new_err(format!(
+                "Worksheet '{}' is not in workbook",
+                ws.sheet_title.read()
+            )));
+        }
+        let title = ws.sheet_title.read().clone();
+        let wb = self.wb.read();
+        wb.index_of(&title).ok_or_else(|| {
+            PyValueError::new_err(format!("Worksheet '{}' is not in workbook", title))
         })
     }
 
@@ -1555,6 +2005,16 @@ impl PyWriteOnlyWorkbook {
         } else {
             Err(PyTypeError::new_err("Sheet key must be str or int"))
         }
+    }
+
+    pub fn index(&self, worksheet: &Bound<'_, PyWriteOnlyWorksheet>) -> PyResult<usize> {
+        let title = worksheet.borrow().title();
+        self.sheets
+            .iter()
+            .position(|s| s.read().title() == title)
+            .ok_or_else(|| {
+                PyValueError::new_err(format!("Worksheet '{}' is not in workbook", title))
+            })
     }
 
     pub fn save(&mut self, path: &Bound<'_, PyAny>) -> PyResult<()> {

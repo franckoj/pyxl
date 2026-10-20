@@ -16,6 +16,8 @@ PyXL delivers an openpyxl-compatible Python API backed by a memory-safe, high-sp
 - [Phase 1 Implementation & Benchmark Report](docs/reports/phase1_report.md): In-Memory Core & PyO3 Bindings (up to 1,431× faster creation)
 - [Phase 2 Implementation & Benchmark Report](docs/reports/phase2_report.md): High-Performance XLSX Reader (9.09× faster standard read, 552× faster time-to-first-row)
 - [Phase 3 Implementation & Benchmark Report](docs/reports/phase3_report.md): High-Performance XLSX Writer (9.80× faster save, 7.85× faster streaming write-only, 236,988 rows/s)
+- [Phase 4 Implementation Report](docs/reports/phase4_report.md): openpyxl Compatibility Layer & Priority API Parity
+- [API Compatibility Matrix](docs/compatibility_matrix.md): Exhaustive openpyxl vs PyXL feature matrix
 
 ## Quick Start
 

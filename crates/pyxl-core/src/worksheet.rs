@@ -150,6 +150,43 @@ impl Worksheet {
         Ok(cell)
     }
 
+    pub fn get_cell_mut(&mut self, row: u32, column: u32) -> Option<&mut Cell> {
+        self.cells.get_mut(&(row, column))
+    }
+
+    pub fn set_cell_number_format(
+        &mut self,
+        row: u32,
+        column: u32,
+        format: Option<String>,
+    ) -> PyxlResult<()> {
+        let cell = self.get_or_create_cell(row, column)?;
+        cell.number_format = format;
+        Ok(())
+    }
+
+    pub fn set_cell_comment(
+        &mut self,
+        row: u32,
+        column: u32,
+        comment: Option<String>,
+    ) -> PyxlResult<()> {
+        let cell = self.get_or_create_cell(row, column)?;
+        cell.comment = comment;
+        Ok(())
+    }
+
+    pub fn set_cell_hyperlink(
+        &mut self,
+        row: u32,
+        column: u32,
+        hyperlink: Option<String>,
+    ) -> PyxlResult<()> {
+        let cell = self.get_or_create_cell(row, column)?;
+        cell.hyperlink = hyperlink;
+        Ok(())
+    }
+
     fn update_bounds(&mut self, row: u32, column: u32) {
         self.cached_min_row = Some(self.cached_min_row.map_or(row, |m| m.min(row)));
         self.cached_max_row = Some(self.cached_max_row.map_or(row, |m| m.max(row)));

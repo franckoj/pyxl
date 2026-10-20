@@ -38,3 +38,31 @@ def coordinate_to_tuple(coord: str) -> tuple[int, int]:
     if not (1 <= row <= 1048576):
         raise ValueError(f"Row {row} is out of bounds (allowed: 1-1048576)")
     return (row, col)
+
+
+def range_boundaries(range_string: str) -> tuple[int, int, int, int]:
+    """
+    Convert a range string (e.g. 'A1:C5' or 'A1') to (min_col, min_row, max_col, max_row).
+    Matches openpyxl.utils.range_boundaries.
+    """
+    clean = range_string.strip()
+    if ":" in clean:
+        parts = clean.split(":")
+        min_row, min_col = coordinate_to_tuple(parts[0])
+        max_row, max_col = coordinate_to_tuple(parts[1])
+        return (
+            min(min_col, max_col),
+            min(min_row, max_row),
+            max(min_col, max_col),
+            max(min_row, max_row),
+        )
+    else:
+        row, col = coordinate_to_tuple(clean)
+        return (col, row, col, row)
+
+
+def quote_sheetname(sheetname: str) -> str:
+    """Add quotes around sheetnames matching openpyxl.utils.quote_sheetname."""
+    if "'" in sheetname:
+        sheetname = sheetname.replace("'", "''")
+    return f"'{sheetname}'"

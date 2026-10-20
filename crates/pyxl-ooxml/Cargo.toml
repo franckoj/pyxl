@@ -17,4 +17,4 @@ ryu = "1.0"
 rayon = "1.10"
 
 [dev-dependencies]
-
+rust_xlsxwriter = "0.100"

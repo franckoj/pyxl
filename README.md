@@ -143,6 +143,7 @@ maturin develop --release
 
 ## Documentation & Phase Reports
 
+- [Release Changelog](CHANGELOG.md): Complete release history and v0.1.0 release notes.
 - [API Reference Manual](docs/api_reference.md): Detailed signatures and parameter reference.
 - [openpyxl Migration Guide](docs/migration_guide.md): Drop-in patterns, edge cases, and best practices.
 - [API Compatibility Matrix](docs/compatibility_matrix.md): Exhaustive openpyxl vs PyXL feature matrix.
@@ -155,6 +156,7 @@ maturin develop --release
 - [Phase 5 Report](docs/reports/phase5_report.md): Multi-Scale Performance Optimizations.
 - [Phase 6 Report](docs/reports/phase6_report.md): Packaging, Distribution & Documentation.
 - [Phase 7 Report](docs/reports/phase7_report.md): Production Hardening & Security Resilience.
+- [Phase 8 Report](docs/reports/phase8_report.md): Final Release Validation & Publishing.
 
 ---
 
@@ -173,8 +175,8 @@ docker run --rm -v $(pwd):/workspace pyxl-test cargo test --workspace
 docker run --rm -v $(pwd):/workspace pyxl-test cargo fmt --all -- --check
 docker run --rm -v $(pwd):/workspace pyxl-test cargo clippy --workspace --all-targets -- -D warnings
 
-# Run Python compatibility & unit tests (78 passed)
-docker run --rm -v $(pwd):/workspace pyxl-test pytest tests/ -v
+# Run Python compatibility, unit, and security tests (84 passed, 105 total)
+docker run --rm -v $(pwd):/workspace pyxl-test bash -c "maturin develop && pytest tests/ -v"
 
 # Run multi-scale benchmarks (1k, 10k, 100k, 500k cells)
 docker run --rm -v $(pwd):/workspace pyxl-test python benchmarks/run_multiscale.py

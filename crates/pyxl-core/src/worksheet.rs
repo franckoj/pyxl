@@ -87,6 +87,28 @@ impl Worksheet {
             .unwrap_or(CellValue::Empty)
     }
 
+    pub fn get_resolved_cell_value(&self, row: u32, column: u32, data_only: bool) -> CellValue {
+        match self.cells.get(&(row, column)) {
+            Some(c) => match &c.value {
+                CellValue::Formula {
+                    formula,
+                    cached_value,
+                } => {
+                    if data_only {
+                        cached_value
+                            .as_ref()
+                            .map(|v| *v.clone())
+                            .unwrap_or(CellValue::Empty)
+                    } else {
+                        CellValue::String(formula.clone())
+                    }
+                }
+                other => other.clone(),
+            },
+            None => CellValue::Empty,
+        }
+    }
+
     pub fn get_or_create_cell(&mut self, row: u32, column: u32) -> PyxlResult<&mut Cell> {
         if !(MIN_ROW..=MAX_ROW).contains(&row) {
             return Err(PyxlError::RowOutOfBounds(row));

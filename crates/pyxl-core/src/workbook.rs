@@ -6,6 +6,8 @@ use crate::worksheet::Worksheet;
 pub struct Workbook {
     sheets: Vec<Worksheet>,
     active_index: usize,
+    pub data_only: bool,
+    pub read_only: bool,
 }
 
 impl Default for Workbook {
@@ -20,7 +22,26 @@ impl Workbook {
         Self {
             sheets: vec![default_sheet],
             active_index: 0,
+            data_only: false,
+            read_only: false,
         }
+    }
+
+    pub fn with_options(data_only: bool, read_only: bool) -> Self {
+        Self {
+            sheets: Vec::new(),
+            active_index: 0,
+            data_only,
+            read_only,
+        }
+    }
+
+    pub fn is_data_only(&self) -> bool {
+        self.data_only
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     pub fn sheet_count(&self) -> usize {

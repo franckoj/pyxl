@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -11,8 +12,11 @@ use pyxl_core::cell::CellValue;
 use pyxl_core::coordinate::{
     coordinate_to_tuple, get_column_letter, range_boundaries, tuple_to_coordinate,
 };
-use pyxl_core::error::PyxlError;
+use pyxl_core::error::{PyxlError, PyxlResult};
 use pyxl_core::workbook::Workbook;
+use pyxl_ooxml::{
+    read_single_cell, SharedStringsTable, SheetInfo, StreamingRowReader, Styles, XlsxPackage,
+};
 
 pub fn map_pyxl_err(err: PyxlError) -> PyErr {
     match err {
@@ -60,9 +64,19 @@ pub fn python_value_to_cell_value(val: &Bound<'_, PyAny>) -> PyResult<CellValue>
     } else if val.is_instance_of::<PyString>() {
         let s = val.extract::<String>()?;
         if s.starts_with('=') {
-            Ok(CellValue::Formula(s))
+            Ok(CellValue::Formula {
+                formula: s,
+                cached_value: None,
+            })
         } else {
             Ok(CellValue::String(s))
+        }
+    } else if val.hasattr("strftime")? {
+        let s = val.str()?.to_string();
+        if val.hasattr("hour")? {
+            Ok(CellValue::DateTime(s))
+        } else {
+            Ok(CellValue::Date(s))
         }
     } else {
         // Fallback: convert to string representation
@@ -78,9 +92,40 @@ pub fn cell_value_to_python<'py>(py: Python<'py>, val: &CellValue) -> PyResult<B
         CellValue::Int(i) => Ok(i.to_object(py).into_bound(py)),
         CellValue::Float(f) => Ok(f.to_object(py).into_bound(py)),
         CellValue::Bool(b) => Ok(b.to_object(py).into_bound(py)),
-        CellValue::DateTime(d) => Ok(d.to_object(py).into_bound(py)),
-        CellValue::Formula(f) => Ok(f.to_object(py).into_bound(py)),
+        CellValue::Date(d) => date_str_to_pydatetime(py, d),
+        CellValue::DateTime(dt) => date_str_to_pydatetime(py, dt),
+        CellValue::Formula { formula, .. } => Ok(formula.to_object(py).into_bound(py)),
     }
+}
+
+fn date_str_to_pydatetime<'py>(py: Python<'py>, s: &str) -> PyResult<Bound<'py, PyAny>> {
+    if s.len() >= 10 && s.as_bytes()[4] == b'-' && s.as_bytes()[7] == b'-' {
+        let year: i32 = s[0..4].parse().unwrap_or(1970);
+        let month: u8 = s[5..7].parse().unwrap_or(1);
+        let day: u8 = s[8..10].parse().unwrap_or(1);
+        let (hour, min, sec, micro) =
+            if s.len() >= 19 && (s.as_bytes()[10] == b' ' || s.as_bytes()[10] == b'T') {
+                let h: u8 = s[11..13].parse().unwrap_or(0);
+                let m: u8 = s[14..16].parse().unwrap_or(0);
+                let sec_str = &s[17..];
+                if let Some((s_part, us_part)) = sec_str.split_once('.') {
+                    let s_val: u8 = s_part.parse().unwrap_or(0);
+                    let us_val: u32 = us_part.parse().unwrap_or(0);
+                    (h, m, s_val, us_val)
+                } else {
+                    let s_val: u8 = sec_str.get(..2).and_then(|x| x.parse().ok()).unwrap_or(0);
+                    (h, m, s_val, 0)
+                }
+            } else {
+                (0, 0, 0, 0)
+            };
+        let dt_mod = py.import_bound("datetime")?;
+        let dt_cls = dt_mod.getattr("datetime")?;
+        if let Ok(dt) = dt_cls.call1((year, month, day, hour, min, sec, micro)) {
+            return Ok(dt);
+        }
+    }
+    Ok(s.to_object(py).into_bound(py))
 }
 
 #[pyclass(name = "Cell")]
@@ -128,12 +173,13 @@ impl PyCell {
     #[getter]
     pub fn value<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let wb = self.wb.read();
+        let data_only = wb.is_data_only();
         let title = self.sheet_title.read().clone();
         let ws = wb
             .get_sheet(&title)
             .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
             .map_err(map_pyxl_err)?;
-        let val = ws.get_cell_value(self.row, self.column);
+        let val = ws.get_resolved_cell_value(self.row, self.column, data_only);
         cell_value_to_python(py, &val)
     }
 
@@ -275,7 +321,6 @@ impl PyWorksheet {
     ) -> PyResult<Bound<'py, PyAny>> {
         let key_str = key.extract::<String>()?;
         if key_str.contains(':') {
-            // Range access e.g. "A1:B10"
             let (min_r, min_c, max_r, max_c) = range_boundaries(&key_str).map_err(map_pyxl_err)?;
             let mut outer_rows = Vec::with_capacity((max_r - min_r + 1) as usize);
 
@@ -297,7 +342,6 @@ impl PyWorksheet {
             }
             Ok(PyTuple::new_bound(py, outer_rows).into_any())
         } else {
-            // Single cell access e.g. "A1"
             let (r, c) = coordinate_to_tuple(&key_str).map_err(map_pyxl_err)?;
             {
                 let mut wb = self.wb.write();
@@ -378,6 +422,7 @@ impl PyWorksheet {
 
         if values_only {
             let wb = self.wb.read();
+            let data_only = wb.is_data_only();
             let title = self.sheet_title.read().clone();
             let ws = wb
                 .get_sheet(&title)
@@ -387,7 +432,7 @@ impl PyWorksheet {
             for r in r_start..=r_end {
                 let mut row_vals = Vec::with_capacity((c_end - c_start + 1) as usize);
                 for c in c_start..=c_end {
-                    let val = ws.get_cell_value(r, c);
+                    let val = ws.get_resolved_cell_value(r, c, data_only);
                     row_vals.push(cell_value_to_python(py, &val)?);
                 }
                 rows.push(PyTuple::new_bound(py, row_vals));
@@ -443,6 +488,7 @@ impl PyWorksheet {
 
         if values_only {
             let wb = self.wb.read();
+            let data_only = wb.is_data_only();
             let title = self.sheet_title.read().clone();
             let ws = wb
                 .get_sheet(&title)
@@ -452,7 +498,7 @@ impl PyWorksheet {
             for c in c_start..=c_end {
                 let mut col_vals = Vec::with_capacity((r_end - r_start + 1) as usize);
                 for r in r_start..=r_end {
-                    let val = ws.get_cell_value(r, c);
+                    let val = ws.get_resolved_cell_value(r, c, data_only);
                     col_vals.push(cell_value_to_python(py, &val)?);
                 }
                 cols.push(PyTuple::new_bound(py, col_vals));
@@ -512,6 +558,16 @@ impl PyWorkbook {
         Self {
             wb: Arc::new(RwLock::new(Workbook::new())),
         }
+    }
+
+    #[getter]
+    pub fn read_only(&self) -> bool {
+        self.wb.read().is_read_only()
+    }
+
+    #[getter]
+    pub fn data_only(&self) -> bool {
+        self.wb.read().is_data_only()
     }
 
     #[getter]
@@ -624,8 +680,22 @@ impl PyWorkbook {
     }
 
     pub fn close(&self) -> PyResult<()> {
-        // In-memory workbook close is a clean no-op
         Ok(())
+    }
+
+    pub fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
+    pub fn __exit__(
+        &self,
+        _exc_type: Option<&Bound<'_, PyAny>>,
+        _exc_val: Option<&Bound<'_, PyAny>>,
+        _exc_tb: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<bool> {
+        self.close()?;
+        Ok(false)
     }
 
     pub fn save(&self, _path: &str) -> PyResult<()> {
@@ -669,5 +739,623 @@ impl PyWorkbookIter {
         } else {
             None
         }
+    }
+}
+
+// -------------------------------------------------------------
+// Read-Only Streaming Classes
+// -------------------------------------------------------------
+
+#[pyclass(name = "ReadOnlyCell")]
+pub struct PyReadOnlyCell {
+    #[pyo3(get)]
+    pub row: u32,
+    #[pyo3(get)]
+    pub column: u32,
+    coordinate: String,
+    column_letter: String,
+    value: PyObject,
+    data_type: &'static str,
+}
+
+#[pymethods]
+impl PyReadOnlyCell {
+    #[getter]
+    pub fn coordinate(&self) -> &str {
+        &self.coordinate
+    }
+
+    #[getter]
+    pub fn column_letter(&self) -> &str {
+        &self.column_letter
+    }
+
+    #[getter]
+    pub fn value<'py>(&self, py: Python<'py>) -> PyObject {
+        self.value.clone_ref(py)
+    }
+
+    #[setter]
+    pub fn set_value(&self, _val: &Bound<'_, PyAny>) -> PyResult<()> {
+        Err(PyTypeError::new_err("Cannot assign to read-only cell"))
+    }
+
+    #[getter]
+    pub fn data_type(&self) -> &'static str {
+        self.data_type
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!("<ReadOnlyCell {}.{}>", self.coordinate, self.row)
+    }
+}
+
+pub type StreamingRowMessage = PyxlResult<Option<Vec<(u32, CellValue)>>>;
+
+#[pyclass(name = "RowIterator")]
+pub struct PyRowIterator {
+    rx: std::sync::mpsc::Receiver<StreamingRowMessage>,
+    min_col: u32,
+    max_col: u32,
+    values_only: bool,
+    data_only: bool,
+    current_row_idx: u32,
+}
+
+#[pymethods]
+impl PyRowIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyTuple>>> {
+        match self.rx.recv() {
+            Ok(Ok(Some(cells))) => {
+                let row_num = self.current_row_idx;
+                self.current_row_idx += 1;
+
+                let width = (self.max_col - self.min_col + 1) as usize;
+                let mut cell_map = HashMap::with_capacity(cells.len());
+                for (col, val) in cells {
+                    cell_map.insert(col, val);
+                }
+
+                let mut row_items = Vec::with_capacity(width);
+                if self.values_only {
+                    for col in self.min_col..=self.max_col {
+                        if let Some(val) = cell_map.remove(&col) {
+                            let resolved = match val {
+                                CellValue::Formula {
+                                    cached_value,
+                                    formula,
+                                } => {
+                                    if self.data_only {
+                                        cached_value.map(|b| *b).unwrap_or(CellValue::Empty)
+                                    } else {
+                                        CellValue::Formula {
+                                            cached_value,
+                                            formula,
+                                        }
+                                    }
+                                }
+                                other => other,
+                            };
+                            row_items.push(cell_value_to_python(py, &resolved)?);
+                        } else {
+                            row_items.push(py.None().into_bound(py));
+                        }
+                    }
+                } else {
+                    for col in self.min_col..=self.max_col {
+                        let coord = tuple_to_coordinate(row_num, col).map_err(map_pyxl_err)?;
+                        let col_letter = get_column_letter(col).map_err(map_pyxl_err)?;
+                        if let Some(val) = cell_map.remove(&col) {
+                            let dt = val.data_type();
+                            let resolved = match val {
+                                CellValue::Formula {
+                                    cached_value,
+                                    formula,
+                                } => {
+                                    if self.data_only {
+                                        cached_value.map(|b| *b).unwrap_or(CellValue::Empty)
+                                    } else {
+                                        CellValue::Formula {
+                                            cached_value,
+                                            formula,
+                                        }
+                                    }
+                                }
+                                other => other,
+                            };
+                            let py_val = cell_value_to_python(py, &resolved)?.unbind();
+                            let cell = Bound::new(
+                                py,
+                                PyReadOnlyCell {
+                                    row: row_num,
+                                    column: col,
+                                    coordinate: coord,
+                                    column_letter: col_letter,
+                                    value: py_val,
+                                    data_type: dt,
+                                },
+                            )?;
+                            row_items.push(cell.into_any());
+                        } else {
+                            let cell = Bound::new(
+                                py,
+                                PyReadOnlyCell {
+                                    row: row_num,
+                                    column: col,
+                                    coordinate: coord,
+                                    column_letter: col_letter,
+                                    value: py.None(),
+                                    data_type: "n",
+                                },
+                            )?;
+                            row_items.push(cell.into_any());
+                        }
+                    }
+                }
+                Ok(Some(PyTuple::new_bound(py, row_items)))
+            }
+            Ok(Ok(None)) | Err(_) => Ok(None),
+            Ok(Err(e)) => Err(map_pyxl_err(e)),
+        }
+    }
+}
+
+#[pyclass(name = "ReadOnlyWorksheet")]
+pub struct PyReadOnlyWorksheet {
+    file_path: String,
+    title: String,
+    target_path: String,
+    shared_strings: Arc<SharedStringsTable>,
+    styles: Arc<Styles>,
+    min_row: u32,
+    max_row: u32,
+    min_col: u32,
+    max_col: u32,
+    data_only: bool,
+}
+
+#[pymethods]
+impl PyReadOnlyWorksheet {
+    #[getter]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    #[getter]
+    pub fn min_row(&self) -> u32 {
+        self.min_row
+    }
+
+    #[getter]
+    pub fn max_row(&self) -> u32 {
+        self.max_row
+    }
+
+    #[getter]
+    pub fn min_column(&self) -> u32 {
+        self.min_col
+    }
+
+    #[getter]
+    pub fn max_column(&self) -> u32 {
+        self.max_col
+    }
+
+    #[getter]
+    pub fn dimensions(&self) -> PyResult<String> {
+        let start = tuple_to_coordinate(self.min_row, self.min_col).map_err(map_pyxl_err)?;
+        let end = tuple_to_coordinate(self.max_row, self.max_col).map_err(map_pyxl_err)?;
+        Ok(format!("{}:{}", start, end))
+    }
+
+    pub fn calculate_dimension(&self) -> PyResult<String> {
+        self.dimensions()
+    }
+
+    pub fn cell<'py>(&self, py: Python<'py>, row: u32, column: u32) -> PyResult<PyReadOnlyCell> {
+        let file = std::fs::File::open(&self.file_path)
+            .map_err(|e| map_pyxl_err(PyxlError::IoError(format!("Failed to open file: {}", e))))?;
+        let mut archive = zip::ZipArchive::new(std::io::BufReader::new(file))
+            .map_err(|e| map_pyxl_err(PyxlError::IoError(format!("Invalid zip: {}", e))))?;
+        let sheet_file = archive.by_name(&self.target_path).map_err(|e| {
+            map_pyxl_err(PyxlError::IoError(format!("Cannot open sheet XML: {}", e)))
+        })?;
+
+        let cell_val = read_single_cell(
+            sheet_file,
+            row,
+            column,
+            &self.shared_strings,
+            &self.styles,
+            self.data_only,
+        )
+        .map_err(map_pyxl_err)?;
+
+        let dt = cell_val.data_type();
+        let py_val = cell_value_to_python(py, &cell_val)?.unbind();
+        let coord = tuple_to_coordinate(row, column).map_err(map_pyxl_err)?;
+        let col_letter = get_column_letter(column).map_err(map_pyxl_err)?;
+
+        Ok(PyReadOnlyCell {
+            row,
+            column,
+            coordinate: coord,
+            column_letter: col_letter,
+            value: py_val,
+            data_type: dt,
+        })
+    }
+
+    pub fn __getitem__<'py>(
+        &self,
+        py: Python<'py>,
+        key: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let key_str = key.extract::<String>()?;
+        if key_str.contains(':') {
+            let (min_r, min_c, max_r, max_c) = range_boundaries(&key_str).map_err(map_pyxl_err)?;
+            let mut outer = Vec::with_capacity((max_r - min_r + 1) as usize);
+            for r in min_r..=max_r {
+                let mut inner = Vec::with_capacity((max_c - min_c + 1) as usize);
+                for c in min_c..=max_c {
+                    let cell = self.cell(py, r, c)?;
+                    inner.push(Bound::new(py, cell)?.into_any());
+                }
+                outer.push(PyTuple::new_bound(py, inner));
+            }
+            Ok(PyTuple::new_bound(py, outer).into_any())
+        } else {
+            let (r, c) = coordinate_to_tuple(&key_str).map_err(map_pyxl_err)?;
+            let cell = self.cell(py, r, c)?;
+            Ok(Bound::new(py, cell)?.into_any())
+        }
+    }
+
+    pub fn __setitem__(&self, _key: &str, _value: &Bound<'_, PyAny>) -> PyResult<()> {
+        Err(PyTypeError::new_err("Worksheet is read-only"))
+    }
+
+    pub fn append(&self, _iterable: &Bound<'_, PyAny>) -> PyResult<u32> {
+        Err(PyTypeError::new_err("Worksheet is read-only"))
+    }
+
+    #[pyo3(signature = (min_row=None, max_row=None, min_col=None, max_col=None, values_only=false))]
+    pub fn iter_rows(
+        &self,
+        min_row: Option<u32>,
+        max_row: Option<u32>,
+        min_col: Option<u32>,
+        max_col: Option<u32>,
+        values_only: bool,
+    ) -> PyResult<PyRowIterator> {
+        let r_start = min_row.unwrap_or(self.min_row);
+        let r_end = max_row.unwrap_or(self.max_row);
+        let c_start = min_col.unwrap_or(self.min_col);
+        let c_end = max_col.unwrap_or(self.max_col);
+
+        let (tx, rx) =
+            std::sync::mpsc::sync_channel::<PyxlResult<Option<Vec<(u32, CellValue)>>>>(64);
+
+        let file_path = self.file_path.clone();
+        let target_path = self.target_path.clone();
+        let shared_strings = Arc::clone(&self.shared_strings);
+        let styles = Arc::clone(&self.styles);
+        let data_only = self.data_only;
+
+        std::thread::spawn(move || {
+            let file = match std::fs::File::open(&file_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = tx.send(Err(PyxlError::IoError(format!(
+                        "Failed to open {}: {}",
+                        file_path, e
+                    ))));
+                    return;
+                }
+            };
+            let mut archive: zip::ZipArchive<std::io::BufReader<std::fs::File>> =
+                match zip::ZipArchive::new(std::io::BufReader::new(file)) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        let _ = tx.send(Err(PyxlError::IoError(format!("Invalid zip: {}", e))));
+                        return;
+                    }
+                };
+            let sheet_file = match archive.by_name(&target_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = tx.send(Err(PyxlError::IoError(format!(
+                        "Cannot open {}: {}",
+                        target_path, e
+                    ))));
+                    return;
+                }
+            };
+
+            let mut reader = StreamingRowReader::new(
+                sheet_file,
+                shared_strings,
+                styles,
+                r_start,
+                r_end,
+                c_start,
+                c_end,
+                data_only,
+            );
+
+            let mut next_expected = r_start;
+            loop {
+                match reader.next_xml_row() {
+                    Ok(Some((xml_row, cells))) => {
+                        while next_expected < xml_row {
+                            if tx.send(Ok(Some(Vec::new()))).is_err() {
+                                return;
+                            }
+                            next_expected += 1;
+                        }
+                        if tx.send(Ok(Some(cells))).is_err() {
+                            return;
+                        }
+                        next_expected = xml_row + 1;
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        return;
+                    }
+                }
+            }
+            while next_expected <= r_end {
+                if tx.send(Ok(Some(Vec::new()))).is_err() {
+                    return;
+                }
+                next_expected += 1;
+            }
+            let _ = tx.send(Ok(None));
+        });
+
+        Ok(PyRowIterator {
+            rx,
+            min_col: c_start,
+            max_col: c_end,
+            values_only,
+            data_only: self.data_only,
+            current_row_idx: r_start,
+        })
+    }
+
+    #[getter]
+    pub fn values(&self) -> PyResult<PyRowIterator> {
+        self.iter_rows(None, None, None, None, true)
+    }
+
+    #[getter]
+    pub fn rows(&self) -> PyResult<PyRowIterator> {
+        self.iter_rows(None, None, None, None, false)
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!("<ReadOnlyWorksheet \"{}\">", self.title)
+    }
+}
+
+#[pyclass(name = "ReadOnlyWorkbook")]
+pub struct PyReadOnlyWorkbook {
+    file_path: String,
+    sheet_infos: Vec<SheetInfo>,
+    shared_strings: Arc<SharedStringsTable>,
+    styles: Arc<Styles>,
+    active_index: usize,
+    data_only: bool,
+    is_closed: bool,
+}
+
+#[pymethods]
+impl PyReadOnlyWorkbook {
+    #[getter]
+    pub fn read_only(&self) -> bool {
+        true
+    }
+
+    #[getter]
+    pub fn data_only(&self) -> bool {
+        self.data_only
+    }
+
+    #[getter]
+    pub fn sheetnames(&self) -> Vec<String> {
+        self.sheet_infos.iter().map(|s| s.name.clone()).collect()
+    }
+
+    #[getter]
+    pub fn active(&self) -> PyResult<PyReadOnlyWorksheet> {
+        if self.sheet_infos.is_empty() {
+            return Err(PyKeyError::new_err("Workbook has no sheets"));
+        }
+        let idx = if self.active_index < self.sheet_infos.len() {
+            self.active_index
+        } else {
+            0
+        };
+        let info = &self.sheet_infos[idx];
+        Ok(PyReadOnlyWorksheet {
+            file_path: self.file_path.clone(),
+            title: info.name.clone(),
+            target_path: info.target_path.clone(),
+            shared_strings: Arc::clone(&self.shared_strings),
+            styles: Arc::clone(&self.styles),
+            min_row: info.min_row,
+            max_row: info.max_row,
+            min_col: info.min_col,
+            max_col: info.max_col,
+            data_only: self.data_only,
+        })
+    }
+
+    #[getter]
+    pub fn worksheets(&self) -> Vec<PyReadOnlyWorksheet> {
+        self.sheet_infos
+            .iter()
+            .map(|info| PyReadOnlyWorksheet {
+                file_path: self.file_path.clone(),
+                title: info.name.clone(),
+                target_path: info.target_path.clone(),
+                shared_strings: Arc::clone(&self.shared_strings),
+                styles: Arc::clone(&self.styles),
+                min_row: info.min_row,
+                max_row: info.max_row,
+                min_col: info.min_col,
+                max_col: info.max_col,
+                data_only: self.data_only,
+            })
+            .collect()
+    }
+
+    pub fn __getitem__(&self, title: &str) -> PyResult<PyReadOnlyWorksheet> {
+        let info = self
+            .sheet_infos
+            .iter()
+            .find(|s| s.name == title)
+            .ok_or_else(|| PyKeyError::new_err(format!("Worksheet {} does not exist.", title)))?;
+
+        Ok(PyReadOnlyWorksheet {
+            file_path: self.file_path.clone(),
+            title: info.name.clone(),
+            target_path: info.target_path.clone(),
+            shared_strings: Arc::clone(&self.shared_strings),
+            styles: Arc::clone(&self.styles),
+            min_row: info.min_row,
+            max_row: info.max_row,
+            min_col: info.min_col,
+            max_col: info.max_col,
+            data_only: self.data_only,
+        })
+    }
+
+    pub fn __contains__(&self, title: &str) -> bool {
+        self.sheet_infos.iter().any(|s| s.name == title)
+    }
+
+    pub fn __len__(&self) -> usize {
+        self.sheet_infos.len()
+    }
+
+    pub fn __iter__(&self) -> PyReadOnlyWorkbookIter {
+        PyReadOnlyWorkbookIter {
+            file_path: self.file_path.clone(),
+            sheet_infos: self.sheet_infos.clone(),
+            shared_strings: Arc::clone(&self.shared_strings),
+            styles: Arc::clone(&self.styles),
+            data_only: self.data_only,
+            index: 0,
+        }
+    }
+
+    pub fn close(&mut self) -> PyResult<()> {
+        self.is_closed = true;
+        Ok(())
+    }
+
+    pub fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
+    pub fn __exit__(
+        &mut self,
+        _exc_type: Option<&Bound<'_, PyAny>>,
+        _exc_val: Option<&Bound<'_, PyAny>>,
+        _exc_tb: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<bool> {
+        self.close()?;
+        Ok(false)
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!("<ReadOnlyWorkbook sheetnames={:?}>", self.sheetnames())
+    }
+}
+
+#[pyclass]
+pub struct PyReadOnlyWorkbookIter {
+    file_path: String,
+    sheet_infos: Vec<SheetInfo>,
+    shared_strings: Arc<SharedStringsTable>,
+    styles: Arc<Styles>,
+    data_only: bool,
+    index: usize,
+}
+
+#[pymethods]
+impl PyReadOnlyWorkbookIter {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self) -> Option<PyReadOnlyWorksheet> {
+        if self.index < self.sheet_infos.len() {
+            let info = &self.sheet_infos[self.index];
+            self.index += 1;
+            Some(PyReadOnlyWorksheet {
+                file_path: self.file_path.clone(),
+                title: info.name.clone(),
+                target_path: info.target_path.clone(),
+                shared_strings: Arc::clone(&self.shared_strings),
+                styles: Arc::clone(&self.styles),
+                min_row: info.min_row,
+                max_row: info.max_row,
+                min_col: info.min_col,
+                max_col: info.max_col,
+                data_only: self.data_only,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+// -------------------------------------------------------------
+// Public load_workbook binding
+// -------------------------------------------------------------
+
+#[pyfunction]
+#[pyo3(signature = (path, read_only=false, data_only=false))]
+pub fn load_workbook<'py>(
+    py: Python<'py>,
+    path: &str,
+    read_only: bool,
+    data_only: bool,
+) -> PyResult<Bound<'py, PyAny>> {
+    let p = std::path::Path::new(path);
+    if !p.exists() {
+        return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!(
+            "No such file or directory: '{}'",
+            path
+        )));
+    }
+
+    let mut package = XlsxPackage::open(path, read_only, data_only).map_err(map_pyxl_err)?;
+
+    if read_only {
+        let ro_wb = PyReadOnlyWorkbook {
+            file_path: path.to_string(),
+            sheet_infos: package.sheets,
+            shared_strings: package.shared_strings,
+            styles: package.styles,
+            active_index: package.active_sheet_index,
+            data_only,
+            is_closed: false,
+        };
+        Ok(Bound::new(py, ro_wb)?.into_any())
+    } else {
+        let wb = package.to_workbook().map_err(map_pyxl_err)?;
+        let py_wb = PyWorkbook {
+            wb: Arc::new(RwLock::new(wb)),
+        };
+        Ok(Bound::new(py, py_wb)?.into_any())
     }
 }

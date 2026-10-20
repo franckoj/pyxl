@@ -9,24 +9,55 @@ pub enum CellValue {
     Int(i64),
     Float(f64),
     Bool(bool),
+    Date(String),
     DateTime(String),
-    Formula(String),
+    Formula {
+        formula: String,
+        cached_value: Option<Box<CellValue>>,
+    },
 }
 
 impl CellValue {
+    pub fn formula(formula: impl Into<String>) -> Self {
+        CellValue::Formula {
+            formula: formula.into(),
+            cached_value: None,
+        }
+    }
+
+    pub fn formula_with_cached(formula: impl Into<String>, cached: CellValue) -> Self {
+        CellValue::Formula {
+            formula: formula.into(),
+            cached_value: Some(Box::new(cached)),
+        }
+    }
+
     pub fn data_type(&self) -> &'static str {
         match self {
             CellValue::Empty => "n",
             CellValue::String(_) => "s",
             CellValue::Int(_) | CellValue::Float(_) => "n",
             CellValue::Bool(_) => "b",
-            CellValue::DateTime(_) => "d",
-            CellValue::Formula(_) => "f",
+            CellValue::Date(_) | CellValue::DateTime(_) => "d",
+            CellValue::Formula { .. } => "f",
         }
     }
 
     pub fn is_empty(&self) -> bool {
         matches!(self, CellValue::Empty)
+    }
+
+    pub fn resolve_value(&self, data_only: bool) -> Option<&CellValue> {
+        match self {
+            CellValue::Formula { cached_value, .. } => {
+                if data_only {
+                    cached_value.as_deref()
+                } else {
+                    Some(self)
+                }
+            }
+            _ => Some(self),
+        }
     }
 }
 
@@ -71,5 +102,16 @@ mod tests {
         let num_cell = Cell::new(5, 27, CellValue::Int(42));
         assert_eq!(num_cell.coordinate().unwrap(), "AA5");
         assert_eq!(num_cell.data_type(), "n");
+
+        let form_cell = Cell::new(
+            1,
+            2,
+            CellValue::formula_with_cached("=A1+1", CellValue::Int(43)),
+        );
+        assert_eq!(form_cell.data_type(), "f");
+        assert_eq!(
+            form_cell.value.resolve_value(true),
+            Some(&CellValue::Int(43))
+        );
     }
 }

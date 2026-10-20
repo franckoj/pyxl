@@ -13,27 +13,24 @@ PyXL delivers an openpyxl-compatible Python API backed by a memory-safe, high-sp
 
 ## Phase Reports & Benchmarks
 
-- [Phase 1 Implementation & Benchmark Report](docs/reports/phase1_report.md)
-  - Execution Time, Speedup, and Peak Memory Graphs
-  - Full openpyxl comparative benchmarks and quality gate results
+- [Phase 1 Implementation & Benchmark Report](docs/reports/phase1_report.md): In-Memory Core & PyO3 Bindings (up to 1,431× faster creation)
+- [Phase 2 Implementation & Benchmark Report](docs/reports/phase2_report.md): High-Performance XLSX Reader (9.09× faster standard read, 552× faster time-to-first-row)
 
 ```python
-from pyxl import Workbook
+import pyxl
 
-wb = Workbook()
+# Standard Reading (In-memory workbook)
+wb = pyxl.load_workbook("financials.xlsx", data_only=True)
 ws = wb.active
-ws.title = "Invoices"
+print(ws["A1"].value)
 
-ws["A1"] = "Invoice ID"
-ws["B1"] = "Amount"
-ws.append(["INV001", 1500.50])
-
-print(ws["A2"].value)  # INV001
-print(ws["B2"].value)  # 1500.50
-
-for row in ws.iter_rows(values_only=True):
-    print(row)
+# Streaming Read-Only (Bounded O(1) memory, instant time-to-first-row)
+with pyxl.load_workbook("large_data.xlsx", read_only=True) as wb:
+    ws = wb.active
+    for row in ws.iter_rows(values_only=True):
+        print(row)
 ```
+
 
 ## Development and Testing
 

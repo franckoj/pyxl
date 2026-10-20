@@ -24,7 +24,9 @@ build/
 .DS_Store
 
 # Benchmark artifacts
+benchmarks/data/
 benchmarks/reports/*.png
 benchmarks/reports/*.csv
 benchmarks/reports/*.json
 benchmarks/reports/*.html
+

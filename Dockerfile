@@ -31,7 +31,8 @@ RUN python3 -m venv /opt/venv && \
     "openpyxl>=3.1.2" \
     "psutil>=5.9.0" \
     "tabulate>=0.9.0" \
-    "matplotlib>=3.7.0"
+    "matplotlib>=3.7.0" \
+    "python-calamine>=0.9.0"
 
 WORKDIR /workspace
 

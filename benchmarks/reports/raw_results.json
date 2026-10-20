@@ -1,0 +1,355 @@
+{
+  "environment": {
+    "timestamp": "2026-10-20T10:27:46.685414",
+    "os": "Linux",
+    "os_release": "7.0.12-linuxkit",
+    "machine": "aarch64",
+    "processor": "",
+    "cpu_count_logical": 8,
+    "cpu_count_physical": 8,
+    "total_ram_mb": 3916.36,
+    "python_version": "3.11.17 (main, Oct  6 2026, 02:08:19) [GCC 12.2.0]"
+  },
+  "benchmarks": [
+    {
+      "operation": "Workbook Creation",
+      "dataset": "200 workbooks",
+      "pyxl": {
+        "operation": "Workbook Creation",
+        "dataset": "200 workbooks",
+        "total_units": 200,
+        "unit_name": "workbooks",
+        "times": [
+          4.583300000149393e-05,
+          3.0541000000994245e-05,
+          3.529200000684796e-05,
+          2.6332999993883277e-05,
+          2.5750000020252628e-05,
+          2.4499999994986865e-05,
+          7.787499998812564e-05
+        ],
+        "cpu_times": [
+          4.091599999989093e-05,
+          2.7500000000069136e-05,
+          3.062499999995083e-05,
+          2.4040999999863644e-05,
+          2.4124999999930452e-05,
+          2.3167000000157145e-05,
+          7.220799999996252e-05
+        ],
+        "peak_rss_mb": 66.37
+      },
+      "openpyxl": {
+        "operation": "Workbook Creation",
+        "dataset": "200 workbooks",
+        "total_units": 200,
+        "unit_name": "workbooks",
+        "times": [
+          0.06395133299997724,
+          0.05085975000002918,
+          0.053970040999956836,
+          0.05115420900000345,
+          0.05116470800004436,
+          0.05119745799999009,
+          0.05046900000002097
+        ],
+        "cpu_times": [
+          0.06393108300000017,
+          0.05085612500000014,
+          0.05395629199999985,
+          0.05115079099999997,
+          0.05116166599999983,
+          0.051180541999999996,
+          0.050466249000000074
+        ],
+        "peak_rss_mb": 75.04
+      },
+      "computed": {
+        "Operation": "Workbook Creation",
+        "Dataset": "200 workbooks",
+        "openpyxl_time_s": 0.0512,
+        "pyxl_time_s": 0.0,
+        "speedup": 1675.28,
+        "openpyxl_cpu_s": 0.0512,
+        "pyxl_cpu_s": 0.0,
+        "openpyxl_rss_mb": 75.04,
+        "pyxl_rss_mb": 66.37,
+        "mem_reduction_pct": 11.6,
+        "pyxl_throughput": "6,548,574.0 workbooks/s",
+        "openpyxl_throughput": "3,908.9 workbooks/s"
+      }
+    },
+    {
+      "operation": "Cell Assignment",
+      "dataset": "1000x10 (10,000 cells)",
+      "pyxl": {
+        "operation": "Cell Assignment",
+        "dataset": "1000x10 (10,000 cells)",
+        "total_units": 10000,
+        "unit_name": "cells",
+        "times": [
+          0.0031884580000109963,
+          0.0032378750000248147,
+          0.0032969170000001213,
+          0.003276791000018875,
+          0.0033013749999781794,
+          0.0031727499999760767,
+          0.0032537920000095255
+        ],
+        "cpu_times": [
+          0.0031855830000000473,
+          0.003236041999999939,
+          0.003294249999999943,
+          0.003273124999999988,
+          0.003298417000000109,
+          0.0031711669999998637,
+          0.0032458330000000313
+        ],
+        "peak_rss_mb": 75.05
+      },
+      "openpyxl": {
+        "operation": "Cell Assignment",
+        "dataset": "1000x10 (10,000 cells)",
+        "total_units": 10000,
+        "unit_name": "cells",
+        "times": [
+          0.008494167000037578,
+          0.008463667000000896,
+          0.008602332999998907,
+          0.00823774999997795,
+          0.008211166000023695,
+          0.008272583000007216,
+          0.008225166999977773
+        ],
+        "cpu_times": [
+          0.008491291999999984,
+          0.008461250000000087,
+          0.008600041999999863,
+          0.008235250000000027,
+          0.008209374999999852,
+          0.008270416999999863,
+          0.00822283300000004
+        ],
+        "peak_rss_mb": 78.66
+      },
+      "computed": {
+        "Operation": "Cell Assignment",
+        "Dataset": "1000x10 (10,000 cells)",
+        "openpyxl_time_s": 0.0083,
+        "pyxl_time_s": 0.0033,
+        "speedup": 2.54,
+        "openpyxl_cpu_s": 0.0083,
+        "pyxl_cpu_s": 0.0032,
+        "openpyxl_rss_mb": 78.66,
+        "pyxl_rss_mb": 75.05,
+        "mem_reduction_pct": 4.6,
+        "pyxl_throughput": "3,073,337.2 cells/s",
+        "openpyxl_throughput": "1,208,812.3 cells/s"
+      }
+    },
+    {
+      "operation": "Random Cell Access",
+      "dataset": "10,000 lookups",
+      "pyxl": {
+        "operation": "Random Cell Access",
+        "dataset": "10,000 lookups",
+        "total_units": 10000,
+        "unit_name": "reads",
+        "times": [
+          0.0037261250000142354,
+          0.00392733300003556,
+          0.003651917000013327,
+          0.0036920000000009168,
+          0.0037502920000065387,
+          0.0036343749999900865,
+          0.003647624999985055
+        ],
+        "cpu_times": [
+          0.003721749999999968,
+          0.003924792000000066,
+          0.0036496249999999897,
+          0.0036896249999998076,
+          0.0037478329999998117,
+          0.0036320409999999193,
+          0.003645416999999984
+        ],
+        "peak_rss_mb": 79.32
+      },
+      "openpyxl": {
+        "operation": "Random Cell Access",
+        "dataset": "10,000 lookups",
+        "total_units": 10000,
+        "unit_name": "reads",
+        "times": [
+          0.0026465419999794904,
+          0.0024794580000389033,
+          0.0024300420000145095,
+          0.002419125000017175,
+          0.0024543750000134423,
+          0.0024656250000134605,
+          0.002441958000019895
+        ],
+        "cpu_times": [
+          0.002642999999999951,
+          0.0024770830000000466,
+          0.0024275419999999492,
+          0.002416957999999969,
+          0.0024521669999999496,
+          0.0024634579999998074,
+          0.0024398749999998692
+        ],
+        "peak_rss_mb": 79.66
+      },
+      "computed": {
+        "Operation": "Random Cell Access",
+        "Dataset": "10,000 lookups",
+        "openpyxl_time_s": 0.0025,
+        "pyxl_time_s": 0.0037,
+        "speedup": 0.66,
+        "openpyxl_cpu_s": 0.0025,
+        "pyxl_cpu_s": 0.0037,
+        "openpyxl_rss_mb": 79.66,
+        "pyxl_rss_mb": 79.32,
+        "mem_reduction_pct": 0.4,
+        "pyxl_throughput": "2,708,559.0 reads/s",
+        "openpyxl_throughput": "4,074,357.0 reads/s"
+      }
+    },
+    {
+      "operation": "Row Appending",
+      "dataset": "5,000 rows (50,000 cells)",
+      "pyxl": {
+        "operation": "Row Appending",
+        "dataset": "5,000 rows (50,000 cells)",
+        "total_units": 5000,
+        "unit_name": "rows",
+        "times": [
+          0.008458041999972465,
+          0.008440624999991542,
+          0.00830212500000016,
+          0.00820416699997395,
+          0.00829395799996746,
+          0.008208249999995587,
+          0.008250165999982073
+        ],
+        "cpu_times": [
+          0.008454707999999922,
+          0.00843766700000037,
+          0.008298750000000243,
+          0.008202292,
+          0.00829170800000023,
+          0.008206417000000243,
+          0.00824799899999995
+        ],
+        "peak_rss_mb": 82.93
+      },
+      "openpyxl": {
+        "operation": "Row Appending",
+        "dataset": "5,000 rows (50,000 cells)",
+        "total_units": 5000,
+        "unit_name": "rows",
+        "times": [
+          0.057969291999995676,
+          0.06798895800000082,
+          0.06370249999997668,
+          0.06466499999999087,
+          0.06208820899996681,
+          0.0651252910000153,
+          0.062070499999947515
+        ],
+        "cpu_times": [
+          0.05795937499999981,
+          0.06797608300000002,
+          0.06369945799999988,
+          0.06465137499999996,
+          0.06208487399999996,
+          0.06506933199999976,
+          0.06205604200000003
+        ],
+        "peak_rss_mb": 97.27
+      },
+      "computed": {
+        "Operation": "Row Appending",
+        "Dataset": "5,000 rows (50,000 cells)",
+        "openpyxl_time_s": 0.0637,
+        "pyxl_time_s": 0.0083,
+        "speedup": 7.68,
+        "openpyxl_cpu_s": 0.0637,
+        "pyxl_cpu_s": 0.0083,
+        "openpyxl_rss_mb": 97.27,
+        "pyxl_rss_mb": 82.93,
+        "mem_reduction_pct": 14.7,
+        "pyxl_throughput": "602,848.5 rows/s",
+        "openpyxl_throughput": "78,489.9 rows/s"
+      }
+    },
+    {
+      "operation": "Row Iteration (values_only)",
+      "dataset": "5,000 rows (50,000 cells)",
+      "pyxl": {
+        "operation": "Row Iteration (values_only)",
+        "dataset": "5,000 rows (50,000 cells)",
+        "total_units": 50000,
+        "unit_name": "cells",
+        "times": [
+          0.003737792000038098,
+          0.0037492920000090635,
+          0.003851625000038439,
+          0.0037225000000375985,
+          0.003771125000014308,
+          0.0037756249999461033,
+          0.003946958999961225
+        ],
+        "cpu_times": [
+          0.0037340420000000485,
+          0.003746082999999789,
+          0.0038491249999998978,
+          0.003720125000000074,
+          0.0037679999999999936,
+          0.003773208000000139,
+          0.003943958999999886
+        ],
+        "peak_rss_mb": 87.98
+      },
+      "openpyxl": {
+        "operation": "Row Iteration (values_only)",
+        "dataset": "5,000 rows (50,000 cells)",
+        "total_units": 50000,
+        "unit_name": "cells",
+        "times": [
+          0.015766999999982545,
+          0.015964209000003393,
+          0.01566962499998681,
+          0.01584920899995268,
+          0.01555233300001646,
+          0.01577879199999188,
+          0.015522625000016887
+        ],
+        "cpu_times": [
+          0.015763167000000244,
+          0.01596112500000002,
+          0.01566687499999997,
+          0.0158462909999999,
+          0.015549374999999976,
+          0.015775167000000145,
+          0.015520292000000158
+        ],
+        "peak_rss_mb": 90.36
+      },
+      "computed": {
+        "Operation": "Row Iteration (values_only)",
+        "Dataset": "5,000 rows (50,000 cells)",
+        "openpyxl_time_s": 0.0158,
+        "pyxl_time_s": 0.0038,
+        "speedup": 4.18,
+        "openpyxl_cpu_s": 0.0158,
+        "pyxl_cpu_s": 0.0038,
+        "openpyxl_rss_mb": 90.36,
+        "pyxl_rss_mb": 87.98,
+        "mem_reduction_pct": 2.6,
+        "pyxl_throughput": "13,258,643.0 cells/s",
+        "openpyxl_throughput": "3,171,180.3 cells/s"
+      }
+    }
+  ]
+}

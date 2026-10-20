@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pyxl-core",
+    "crates/pyxl-ooxml",
+    "crates/pyxl-python",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["PyXL Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pyxl/pyxl"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+opt-level = 3
+debug = true

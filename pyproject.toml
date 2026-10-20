@@ -1,0 +1,31 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "pyxl"
+version = "0.1.0"
+description = "A high-performance, Rust-powered alternative to openpyxl"
+authors = [{ name = "PyXL Contributors" }]
+license = { text = "MIT OR Apache-2.0" }
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "openpyxl>=3.1.2",
+    "psutil>=5.9.0",
+    "tabulate>=0.9.0",
+]
+
+[tool.maturin]
+manifest-path = "crates/pyxl-python/Cargo.toml"
+module-name = "pyxl._core"
+python-source = "python"
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

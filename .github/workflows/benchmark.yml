@@ -1,0 +1,40 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "python/**"
+      - "benchmarks/**"
+
+jobs:
+  benchmark:
+    name: Run Comparative Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies & build pyxl
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin pytest openpyxl psutil tabulate
+          maturin develop --release
+
+      - name: Run Benchmarks
+        run: python benchmarks/run_benchmarks.py
+
+      - name: Archive Benchmark Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-reports
+          path: benchmarks/reports/

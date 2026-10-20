@@ -1,0 +1,17 @@
+[package]
+name = "pyxl-python"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyxl-core = { path = "../pyxl-core" }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
+parking_lot = "0.12"
+
+[dev-dependencies]

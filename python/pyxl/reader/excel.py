@@ -33,6 +33,24 @@ def load_workbook(
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"[Errno 2] No such file or directory: '{filepath}'")
 
-    return _load_workbook(filepath, read_only=bool(read_only), data_only=bool(data_only))
+    try:
+        return _load_workbook(filepath, read_only=bool(read_only), data_only=bool(data_only))
+    except (ValueError, IOError, OSError, Exception) as e:
+        msg = str(e)
+        if any(
+            marker in msg
+            for marker in (
+                "ZIP bomb",
+                "Invalid XLSX",
+                "Invalid zip",
+                "Cannot find xl/workbook.xml",
+                "Cannot open xl/workbook.xml",
+                "not found in archive",
+                "security violation",
+            )
+        ):
+            from pyxl.utils.exceptions import InvalidFileException
+            raise InvalidFileException(msg) from e
+        raise
 
 __all__ = ["load_workbook"]

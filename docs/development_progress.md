@@ -63,7 +63,18 @@
   - Implemented automated multi-platform wheel build workflow (`.github/workflows/wheels.yml`) using `maturin-action` for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon), and Windows (x64), plus `sdist`.
   - Authored comprehensive documentation suite: `docs/migration_guide.md`, `docs/api_reference.md`, `docs/reports/phase6_report.md`, and upgraded `README.md` with multi-scale performance tables and quickstart guides.
 
+## Phase 7: Production Hardening
+- **Status**: Complete
+- **Date**: 2026-10-20
+- **Summary**:
+  - Implemented ZIP bomb & decompression explosion defense with maximum uncompressed file limit (512 MB), maximum total uncompressed size (1 GB), compression ratio ceiling (100:1), and entry count ceiling (10,000).
+  - Implemented XML external entity (XXE) and recursive entity expansion (Billion Laughs) defense via strict DTD / `<!DOCTYPE>` rejection across all OOXML components.
+  - Implemented shared strings memory bounding (max 10,000,000 entries).
+  - Enforced Excel grid bounds (1 to 1,048,576 rows, 1 to 16,384 columns).
+  - Ensured consistent `InvalidFileException` raising on corrupted archives and security violations.
+  - Published comprehensive security architecture in `docs/security.md` and report in `docs/reports/phase7_report.md`.
+  - 105 total tests passing (21 Rust + 84 Python).
+
 ## Upcoming Phases
 
-- **Phase 7**: Production Hardening (ZIP bomb defenses, parsing limits, security checks).
-- **Phase 8**: Final Release & Publishing.
+- **Phase 8**: Final Release Validation & Publishing (Git tag release, release checklist, PyPI readiness).

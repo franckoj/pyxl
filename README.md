@@ -147,12 +147,14 @@ maturin develop --release
 - [openpyxl Migration Guide](docs/migration_guide.md): Drop-in patterns, edge cases, and best practices.
 - [API Compatibility Matrix](docs/compatibility_matrix.md): Exhaustive openpyxl vs PyXL feature matrix.
 - [Development Changelog](docs/development_progress.md): Chronological engineering milestones.
+- [Security Architecture & Threat Model](docs/security.md): Hardening against ZIP bombs, XXE, and malformed files.
 - [Phase 1 Report](docs/reports/phase1_report.md): In-Memory Core & PyO3 Bindings.
 - [Phase 2 Report](docs/reports/phase2_report.md): High-Performance XLSX Reader.
 - [Phase 3 Report](docs/reports/phase3_report.md): High-Performance XLSX Writer.
 - [Phase 4 Report](docs/reports/phase4_report.md): openpyxl Compatibility Layer.
 - [Phase 5 Report](docs/reports/phase5_report.md): Multi-Scale Performance Optimizations.
 - [Phase 6 Report](docs/reports/phase6_report.md): Packaging, Distribution & Documentation.
+- [Phase 7 Report](docs/reports/phase7_report.md): Production Hardening & Security Resilience.
 
 ---
 

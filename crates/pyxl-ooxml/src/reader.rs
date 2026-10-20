@@ -48,10 +48,69 @@ impl XlsxPackage<BufReader<File>> {
     }
 }
 
+pub const MAX_UNCOMPRESSED_FILE_SIZE: u64 = 512 * 1024 * 1024; // 512 MB per entry
+pub const MAX_TOTAL_UNCOMPRESSED_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB total
+pub const MAX_COMPRESSION_RATIO: f64 = 100.0;
+pub const MIN_SIZE_FOR_RATIO_CHECK: u64 = 5 * 1024 * 1024; // 5 MB uncompressed
+pub const MAX_ZIP_ENTRIES: usize = 10_000;
+
+pub fn validate_zip_archive_security<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+) -> PyxlResult<()> {
+    let entry_count = archive.len();
+    if entry_count > MAX_ZIP_ENTRIES {
+        return Err(PyxlError::ZipBombDetected(format!(
+            "Archive contains {} entries, exceeding safety threshold of {}",
+            entry_count, MAX_ZIP_ENTRIES
+        )));
+    }
+
+    let mut total_uncompressed: u64 = 0;
+    for i in 0..entry_count {
+        let file = archive
+            .by_index(i)
+            .map_err(|e| PyxlError::IoError(format!("Malformed ZIP entry #{}: {}", i, e)))?;
+        let uncompressed = file.size();
+        let compressed = file.compressed_size();
+
+        if uncompressed > MAX_UNCOMPRESSED_FILE_SIZE {
+            return Err(PyxlError::ZipBombDetected(format!(
+                "Entry '{}' uncompressed size ({} bytes) exceeds threshold of {} bytes",
+                file.name(),
+                uncompressed,
+                MAX_UNCOMPRESSED_FILE_SIZE
+            )));
+        }
+
+        total_uncompressed = total_uncompressed.saturating_add(uncompressed);
+        if total_uncompressed > MAX_TOTAL_UNCOMPRESSED_SIZE {
+            return Err(PyxlError::ZipBombDetected(format!(
+                "Total uncompressed archive size exceeds safety threshold of {} bytes",
+                MAX_TOTAL_UNCOMPRESSED_SIZE
+            )));
+        }
+
+        if uncompressed >= MIN_SIZE_FOR_RATIO_CHECK && compressed > 0 {
+            let ratio = (uncompressed as f64) / (compressed as f64);
+            if ratio > MAX_COMPRESSION_RATIO {
+                return Err(PyxlError::ZipBombDetected(format!(
+                    "Entry '{}' compression ratio ({:.1}:1) exceeds maximum safety ratio of {:.1}:1",
+                    file.name(),
+                    ratio,
+                    MAX_COMPRESSION_RATIO
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl<R: Read + Seek> XlsxPackage<R> {
     pub fn from_reader(reader: R, read_only: bool, data_only: bool) -> PyxlResult<Self> {
         let mut archive = ZipArchive::new(reader)
             .map_err(|e| PyxlError::IoError(format!("Invalid XLSX/ZIP archive: {}", e)))?;
+
+        validate_zip_archive_security(&mut archive)?;
 
         // 1. Resolve workbook.xml path from _rels/.rels
         let workbook_path = resolve_workbook_path(&mut archive)?;
@@ -89,29 +148,29 @@ impl<R: Read + Seek> XlsxPackage<R> {
         // 4. Parse sharedStrings.xml if present
         let shared_strings = if let Some(ss_target) = find_rel_target(&rels_map, "sharedStrings") {
             let full_ss_path = normalize_zip_path(&base_dir, &ss_target);
-            if let Ok(file) = archive.by_name(&full_ss_path) {
-                SharedStringsTable::from_reader(file).unwrap_or_default()
-            } else {
-                SharedStringsTable::default()
+            match archive.by_name(&full_ss_path) {
+                Ok(file) => SharedStringsTable::from_reader(file)?,
+                Err(_) => SharedStringsTable::default(),
             }
-        } else if let Ok(file) = archive.by_name("xl/sharedStrings.xml") {
-            SharedStringsTable::from_reader(file).unwrap_or_default()
         } else {
-            SharedStringsTable::default()
+            match archive.by_name("xl/sharedStrings.xml") {
+                Ok(file) => SharedStringsTable::from_reader(file)?,
+                Err(_) => SharedStringsTable::default(),
+            }
         };
 
         // 5. Parse styles.xml if present
         let styles = if let Some(styles_target) = find_rel_target(&rels_map, "styles") {
             let full_styles_path = normalize_zip_path(&base_dir, &styles_target);
-            if let Ok(file) = archive.by_name(&full_styles_path) {
-                Styles::from_reader(file).unwrap_or_default()
-            } else {
-                Styles::default()
+            match archive.by_name(&full_styles_path) {
+                Ok(file) => Styles::from_reader(file)?,
+                Err(_) => Styles::default(),
             }
-        } else if let Ok(file) = archive.by_name("xl/styles.xml") {
-            Styles::from_reader(file).unwrap_or_default()
         } else {
-            Styles::default()
+            match archive.by_name("xl/styles.xml") {
+                Ok(file) => Styles::from_reader(file)?,
+                Err(_) => Styles::default(),
+            }
         };
 
         Ok(Self {

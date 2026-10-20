@@ -5,7 +5,7 @@ class OpenpyxlException(Exception):
     pass
 
 
-class InvalidFileException(OpenpyxlException):
+class InvalidFileException(OpenpyxlException, ValueError):
     """Raised when an XLSX file is invalid, corrupted, or not an archive."""
     pass
 

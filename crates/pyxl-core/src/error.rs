@@ -37,6 +37,15 @@ pub enum PyxlError {
 
     #[error("IO error: {0}")]
     IoError(String),
+
+    #[error("ZIP bomb detected: {0}")]
+    ZipBombDetected(String),
+
+    #[error("XML security violation: {0}")]
+    XmlSecurityViolation(String),
+
+    #[error("Invalid XLSX file format: {0}")]
+    InvalidFileFormat(String),
 }
 
 pub type PyxlResult<T> = Result<T, PyxlError>;

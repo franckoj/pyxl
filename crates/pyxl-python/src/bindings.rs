@@ -48,6 +48,15 @@ pub fn map_pyxl_err(err: PyxlError) -> PyErr {
         PyxlError::ValueError(msg) => PyValueError::new_err(msg),
         PyxlError::TypeError(msg) => PyTypeError::new_err(msg),
         PyxlError::IoError(msg) => pyo3::exceptions::PyIOError::new_err(msg),
+        PyxlError::ZipBombDetected(msg) => {
+            PyValueError::new_err(format!("ZIP bomb detected: {}", msg))
+        }
+        PyxlError::XmlSecurityViolation(msg) => {
+            PyValueError::new_err(format!("XML security violation: {}", msg))
+        }
+        PyxlError::InvalidFileFormat(msg) => {
+            PyValueError::new_err(format!("Invalid XLSX file format: {}", msg))
+        }
     }
 }
 
@@ -1453,6 +1462,7 @@ impl PyReadOnlyWorksheet {
             .map_err(|e| map_pyxl_err(PyxlError::IoError(format!("Failed to open file: {}", e))))?;
         let mut archive = zip::ZipArchive::new(std::io::BufReader::new(file))
             .map_err(|e| map_pyxl_err(PyxlError::IoError(format!("Invalid zip: {}", e))))?;
+        pyxl_ooxml::validate_zip_archive_security(&mut archive).map_err(map_pyxl_err)?;
         let sheet_file = archive.by_name(&self.target_path).map_err(|e| {
             map_pyxl_err(PyxlError::IoError(format!("Cannot open sheet XML: {}", e)))
         })?;
@@ -1558,6 +1568,10 @@ impl PyReadOnlyWorksheet {
                         return;
                     }
                 };
+            if let Err(e) = pyxl_ooxml::validate_zip_archive_security(&mut archive) {
+                let _ = tx.send(Err(e));
+                return;
+            }
             let sheet_file = match archive.by_name(&target_path) {
                 Ok(f) => f,
                 Err(e) => {

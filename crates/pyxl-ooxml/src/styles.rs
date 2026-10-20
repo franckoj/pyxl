@@ -73,6 +73,11 @@ impl Styles {
                         in_cell_xfs = false;
                     }
                 }
+                Ok(Event::DocType(_)) => {
+                    return Err(PyxlError::XmlSecurityViolation(
+                        "DTD / DOCTYPE declaration is forbidden in styles.xml".to_string(),
+                    ));
+                }
                 Ok(Event::Eof) => break,
                 Err(err) => {
                     return Err(PyxlError::IoError(format!(

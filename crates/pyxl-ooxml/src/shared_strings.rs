@@ -51,10 +51,20 @@ impl SharedStringsTable {
                     }
                     b"si" => {
                         in_si = false;
+                        if strings.len() >= 10_000_000 {
+                            return Err(PyxlError::XmlSecurityViolation(
+                                "Shared strings table exceeds 10,000,000 entries limit".to_string(),
+                            ));
+                        }
                         strings.push(current_string.clone());
                     }
                     _ => {}
                 },
+                Ok(Event::DocType(_)) => {
+                    return Err(PyxlError::XmlSecurityViolation(
+                        "DTD / DOCTYPE declaration is forbidden in sharedStrings.xml".to_string(),
+                    ));
+                }
                 Ok(Event::Eof) => break,
                 Err(err) => {
                     return Err(PyxlError::IoError(format!(

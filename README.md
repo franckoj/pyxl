@@ -157,6 +157,7 @@ maturin develop --release
 - [Phase 6 Report](docs/reports/phase6_report.md): Packaging, Distribution & Documentation.
 - [Phase 7 Report](docs/reports/phase7_report.md): Production Hardening & Security Resilience.
 - [Phase 8 Report](docs/reports/phase8_report.md): Final Release Validation & Publishing.
+- [Industry Benchmark Report](docs/reports/industry_benchmark_report.md): Comprehensive evaluation against openpyxl, xlsxwriter, calamine, and rust_xlsxwriter.
 
 ---
 

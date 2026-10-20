@@ -30,7 +30,8 @@ RUN python3 -m venv /opt/venv && \
     "pytest>=7.4.0" \
     "openpyxl>=3.1.2" \
     "psutil>=5.9.0" \
-    "tabulate>=0.9.0"
+    "tabulate>=0.9.0" \
+    "matplotlib>=3.7.0"
 
 WORKDIR /workspace
 

@@ -11,7 +11,11 @@ PyXL delivers an openpyxl-compatible Python API backed by a memory-safe, high-sp
 - **Bounded Memory & Streaming**: Minimal overhead and efficient memory layouts.
 - **Strict Verification**: Thoroughly tested against openpyxl for 100% behavioral consistency.
 
-## Quick Start
+## Phase Reports & Benchmarks
+
+- [Phase 1 Implementation & Benchmark Report](docs/reports/phase1_report.md)
+  - Execution Time, Speedup, and Peak Memory Graphs
+  - Full openpyxl comparative benchmarks and quality gate results
 
 ```python
 from pyxl import Workbook

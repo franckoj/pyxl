@@ -6,6 +6,7 @@ Measures:
 - Peak RSS memory
 - Throughput (cells/sec, rows/sec, ops/sec)
 - Speedup and memory reduction ratio
+- Generates visual comparison plots (PNG)
 """
 
 import csv
@@ -18,16 +19,12 @@ import sys
 import time
 from datetime import datetime
 import psutil
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 REPETITIONS = 7
 WARMUP_RUNS = 2
-
-# Operations to benchmark
-# 1. Workbook creation
-# 2. Sequential cell assignment (10,000 cells: 1000 rows x 10 cols)
-# 3. Random cell access (10,000 reads)
-# 4. Row appending (5,000 rows x 10 cols = 50,000 cells)
-# 5. Iteration over rows (5,000 rows x 10 cols, values_only=True)
 
 
 def get_environment_info():
@@ -310,8 +307,69 @@ def compute_metrics(bench_dict):
     }
 
 
+def generate_plots(results):
+    os.makedirs("benchmarks/reports", exist_ok=True)
+    labels = [r["Operation"] for r in results]
+    openpyxl_times = [r["openpyxl_time_s"] for r in results]
+    pyxl_times = [r["pyxl_time_s"] for r in results]
+    speedups = [r["speedup"] for r in results]
+    openpyxl_mem = [r["openpyxl_rss_mb"] for r in results]
+    pyxl_mem = [r["pyxl_rss_mb"] for r in results]
+
+    x = range(len(labels))
+    width = 0.35
+
+    # 1. Execution Time Plot (Log scale for clarity due to 2000x difference)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar([i - width/2 for i in x], openpyxl_times, width, label="openpyxl", color="#e74c3c")
+    ax.bar([i + width/2 for i in x], pyxl_times, width, label="PyXL (Rust)", color="#2ecc71")
+    ax.set_ylabel("Execution Time (seconds) - Log Scale")
+    ax.set_yscale("log")
+    ax.set_title("Execution Time: openpyxl vs PyXL (Lower is better)")
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels, rotation=15, ha="right")
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig("benchmarks/reports/execution_time.png", dpi=150)
+    plt.close()
+
+    # 2. Speedup Bar Plot
+    fig, ax = plt.subplots(figsize=(10, 5))
+    bars = ax.bar(labels, speedups, color="#3498db", width=0.5)
+    ax.set_ylabel("Speedup Multiplier (x)")
+    ax.set_yscale("log")
+    ax.set_title("PyXL Speedup over openpyxl (Log Scale, Higher is better)")
+    ax.axhline(1.0, color="gray", linestyle="--", linewidth=1, label="Baseline (1.0x)")
+    for bar in bars:
+        h = bar.get_height()
+        ax.annotate(f"{h}x",
+                    xy=(bar.get_x() + bar.get_width() / 2, h),
+                    xytext=(0, 3), textcoords="offset points",
+                    ha="center", va="bottom", fontsize=9, fontweight="bold")
+    ax.set_xticklabels(labels, rotation=15, ha="right")
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig("benchmarks/reports/speedup.png", dpi=150)
+    plt.close()
+
+    # 3. Peak RSS Memory Plot
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar([i - width/2 for i in x], openpyxl_mem, width, label="openpyxl Peak RSS", color="#e67e22")
+    ax.bar([i + width/2 for i in x], pyxl_mem, width, label="PyXL Peak RSS", color="#1abc9c")
+    ax.set_ylabel("Memory (MB)")
+    ax.set_title("Peak RSS Memory Consumption: openpyxl vs PyXL (Lower is better)")
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels, rotation=15, ha="right")
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig("benchmarks/reports/memory_utilization.png", dpi=150)
+    plt.close()
+
+
 def run_all():
     os.makedirs("benchmarks/reports", exist_ok=True)
+    os.makedirs("docs/reports", exist_ok=True)
+
     bench_fns = [
         bench_create_workbook,
         bench_cell_assignment,
@@ -372,6 +430,9 @@ def run_all():
             f"Speedup={row['speedup']}x, MemReduction={row['mem_reduction_pct']}%"
         )
 
+    # Generate visual graphs
+    generate_plots(results)
+
     # Save raw results JSON
     with open("benchmarks/reports/raw_results.json", "w") as f:
         json.dump(raw_data, f, indent=2)
@@ -394,6 +455,7 @@ def run_all():
         f.write(f"Generated at: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n")
         f.write(f"Environment: {raw_data['environment']['os']} ({raw_data['environment']['machine']}), ")
         f.write(f"{raw_data['environment']['cpu_count_logical']} Cores, {raw_data['environment']['total_ram_mb']} MB RAM\n\n")
+        f.write("## Performance Comparison Table\n\n")
         f.write("| Operation | Dataset | openpyxl (s) | PyXL (s) | Speedup | openpyxl RSS (MB) | PyXL RSS (MB) | Mem Reduction | PyXL Throughput |\n")
         f.write("|---|---|---|---|---|---|---|---|---|\n")
         for r in results:
@@ -401,9 +463,17 @@ def run_all():
                 f"| {r['Operation']} | {r['Dataset']} | {r['openpyxl_time_s']}s | {r['pyxl_time_s']}s | "
                 f"**{r['speedup']}x** | {r['openpyxl_rss_mb']} | {r['pyxl_rss_mb']} | {r['mem_reduction_pct']}% | {r['pyxl_throughput']} |\n"
             )
+        f.write("\n## Performance Graphs\n\n")
+        f.write("### Execution Time (Log Scale)\n")
+        f.write("![Execution Time](execution_time.png)\n\n")
+        f.write("### Speedup Factor\n")
+        f.write("![Speedup](speedup.png)\n\n")
+        f.write("### Peak Memory Utilization (RSS)\n")
+        f.write("![Peak Memory](memory_utilization.png)\n\n")
 
     print("\nBenchmark report successfully generated at benchmarks/reports/comparison.md")
     print("Summary CSV saved at benchmarks/reports/summary.csv")
+    print("Plots generated in benchmarks/reports/")
 
 
 if __name__ == "__main__":

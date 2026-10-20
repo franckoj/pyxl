@@ -42,7 +42,20 @@
   - Published comprehensive compatibility matrix in `docs/compatibility_matrix.md`.
   - 99 total tests passing (21 Rust + 78 Python), zero Clippy warnings, zero fmt diffs.
 
+## Phase 5: Performance Optimization & Benchmarking Suite
+- **Status**: Complete
+- **Date**: 2026-10-20
+- **Summary**:
+  - Eliminated heap allocations in coordinate formatting with stack-buffered `write_coordinate` and `write_column_letter`.
+  - Integrated `itoa` and `ryu` for fast, allocation-free integer and float serialization.
+  - Implemented pre-allocated sheet XML buffers based on cell counts and persistent streaming row buffers in `WriteOnlySheet`.
+  - Optimized XML entity escaping using slice scanning.
+  - Added multi-sheet parallel XML serialization using `rayon`.
+  - Implemented multi-scale benchmarking suite across Small (1k), Medium (10k), Large (100k), and Stress (500k) datasets.
+  - Benchmark results: Up to 8.12× faster save, 7.16× faster write-only, 8.73× faster read, peak throughput > 1.68 million cells/s, and 148 MB RAM savings on 500k cells.
+
 ## Upcoming Phases
 
-- **Phase 5**: Performance Optimization & Benchmarking Suite (profiling, buffer reuse, Rayon multithreading, multi-scale benchmarks).
-- **Phase 6**: Packaging, Distribution & Documentation (Maturin multi-platform wheels, README polish, API reference).
+- **Phase 6**: Packaging, Distribution & Documentation (Maturin multi-platform wheels, README polish, API reference, GitHub Actions CI workflow).
+- **Phase 7**: Production Hardening (ZIP bomb defenses, parsing limits, security checks).
+- **Phase 8**: Final Release & Publishing.

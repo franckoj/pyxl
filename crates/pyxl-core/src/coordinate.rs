@@ -7,20 +7,33 @@ pub const MAX_COLUMN: u32 = 16_384;
 
 const INVALID_TITLE_CHARS: [char; 7] = ['\\', '/', '?', '*', ':', '[', ']'];
 
-/// Convert a column index (1-based) to an Excel column letter (e.g., 1 -> "A", 27 -> "AA").
-pub fn get_column_letter(col_idx: u32) -> PyxlResult<String> {
+/// Write column letters directly into an existing buffer without heap allocation.
+#[inline]
+pub fn write_column_letter(col_idx: u32, out: &mut String) -> PyxlResult<()> {
     if !(MIN_COLUMN..=MAX_COLUMN).contains(&col_idx) {
         return Err(PyxlError::ColumnOutOfBounds(col_idx));
     }
 
     let mut col = col_idx;
-    let mut s = String::new();
+    let mut buf = [0u8; 3];
+    let mut idx = 3;
     while col > 0 {
+        idx -= 1;
         let rem = ((col - 1) % 26) as u8;
-        s.push((b'A' + rem) as char);
+        buf[idx] = b'A' + rem;
         col = (col - 1) / 26;
     }
-    Ok(s.chars().rev().collect())
+    // Safety: buf[idx..3] only contains ASCII bytes b'A'..=b'Z'
+    let s = unsafe { std::str::from_utf8_unchecked(&buf[idx..3]) };
+    out.push_str(s);
+    Ok(())
+}
+
+/// Convert a column index (1-based) to an Excel column letter (e.g., 1 -> "A", 27 -> "AA").
+pub fn get_column_letter(col_idx: u32) -> PyxlResult<String> {
+    let mut s = String::with_capacity(3);
+    write_column_letter(col_idx, &mut s)?;
+    Ok(s)
 }
 
 /// Convert an Excel column letter (e.g., "A", "AA", "xfd") to a 1-based column index.
@@ -91,13 +104,23 @@ pub fn coordinate_to_tuple(coord: &str) -> PyxlResult<(u32, u32)> {
     Ok((row, col))
 }
 
-/// Convert (row, col) (1-based) to an Excel coordinate string (e.g., (1, 1) -> "A1").
-pub fn tuple_to_coordinate(row: u32, column: u32) -> PyxlResult<String> {
+/// Write (row, col) (1-based) directly into an existing buffer as coordinate (e.g., (1, 1) -> "A1").
+#[inline]
+pub fn write_coordinate(row: u32, column: u32, out: &mut String) -> PyxlResult<()> {
     if !(MIN_ROW..=MAX_ROW).contains(&row) {
         return Err(PyxlError::RowOutOfBounds(row));
     }
-    let col_letter = get_column_letter(column)?;
-    Ok(format!("{}{}", col_letter, row))
+    write_column_letter(column, out)?;
+    let mut buf = itoa::Buffer::new();
+    out.push_str(buf.format(row));
+    Ok(())
+}
+
+/// Convert (row, col) (1-based) to an Excel coordinate string (e.g., (1, 1) -> "A1").
+pub fn tuple_to_coordinate(row: u32, column: u32) -> PyxlResult<String> {
+    let mut s = String::with_capacity(10);
+    write_coordinate(row, column, &mut s)?;
+    Ok(s)
 }
 
 /// Parse a range string (e.g. "A1:B10" or "A1") into (min_row, min_col, max_row, max_col) 1-based bounds.

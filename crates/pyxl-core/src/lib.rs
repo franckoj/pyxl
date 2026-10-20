@@ -7,7 +7,8 @@ pub mod worksheet;
 pub use cell::{Cell, CellValue};
 pub use coordinate::{
     column_index_from_string, coordinate_to_tuple, get_column_letter, range_boundaries,
-    tuple_to_coordinate, validate_sheet_title, MAX_COLUMN, MAX_ROW, MIN_COLUMN, MIN_ROW,
+    tuple_to_coordinate, validate_sheet_title, write_column_letter, write_coordinate, MAX_COLUMN,
+    MAX_ROW, MIN_COLUMN, MIN_ROW,
 };
 pub use error::{PyxlError, PyxlResult};
 pub use workbook::Workbook;

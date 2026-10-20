@@ -4,10 +4,11 @@ use std::path::Path;
 
 use chrono::NaiveDate;
 use pyxl_core::cell::CellValue;
-use pyxl_core::coordinate::tuple_to_coordinate;
+use pyxl_core::coordinate::{tuple_to_coordinate, write_coordinate};
 use pyxl_core::error::{PyxlError, PyxlResult};
 use pyxl_core::workbook::Workbook;
 use pyxl_core::worksheet::Worksheet;
+use rayon::prelude::*;
 use zip::write::SimpleFileOptions;
 use zip::CompressionMethod;
 use zip::ZipWriter;
@@ -56,18 +57,35 @@ pub fn write_workbook<W: Write + Seek>(writer: W, wb: &Workbook) -> PyxlResult<(
     zip.write_all(STYLES_XML.as_bytes())
         .map_err(|e| PyxlError::IoError(format!("Write error: {}", e)))?;
 
-    // 6. Worksheets
-    for (i, sheet_name) in wb.sheetnames().iter().enumerate() {
+    // 6. Worksheets (parallel serialization via Rayon if multi-sheet)
+    let sheet_names = wb.sheetnames();
+    let sheets: Vec<&Worksheet> = sheet_names
+        .iter()
+        .filter_map(|name| wb.get_sheet(name))
+        .collect();
+
+    let sheet_xmls: Vec<PyxlResult<String>> = if sheets.len() > 1 {
+        sheets
+            .par_iter()
+            .map(|ws| generate_worksheet_xml(ws))
+            .collect()
+    } else {
+        sheets.iter().map(|ws| generate_worksheet_xml(ws)).collect()
+    };
+
+    for (i, res) in sheet_xmls.into_iter().enumerate() {
         let sheet_idx = i + 1;
-        let sheet_path = format!("xl/worksheets/sheet{}.xml", sheet_idx);
+        let mut itoa_buf = itoa::Buffer::new();
+        let mut sheet_path = String::with_capacity(32);
+        sheet_path.push_str("xl/worksheets/sheet");
+        sheet_path.push_str(itoa_buf.format(sheet_idx));
+        sheet_path.push_str(".xml");
+
         zip.start_file(&sheet_path, options)
             .map_err(|e| PyxlError::IoError(format!("Zip error: {}", e)))?;
-
-        if let Some(ws) = wb.get_sheet(sheet_name) {
-            let sheet_xml = generate_worksheet_xml(ws)?;
-            zip.write_all(sheet_xml.as_bytes())
-                .map_err(|e| PyxlError::IoError(format!("Write error: {}", e)))?;
-        }
+        let sheet_xml = res?;
+        zip.write_all(sheet_xml.as_bytes())
+            .map_err(|e| PyxlError::IoError(format!("Write error: {}", e)))?;
     }
 
     zip.finish()
@@ -86,6 +104,7 @@ pub struct WriteOnlySheet {
     pub max_col: u32,
     writer: BufWriter<std::fs::File>,
     reader: std::fs::File,
+    row_buf: String,
 }
 
 impl WriteOnlySheet {
@@ -101,6 +120,7 @@ impl WriteOnlySheet {
             max_col: 0,
             writer: BufWriter::with_capacity(65536, file),
             reader: read_handle,
+            row_buf: String::with_capacity(2048),
         })
     }
 
@@ -120,14 +140,18 @@ impl WriteOnlySheet {
             self.max_col = col_count;
         }
 
-        let mut row_str = format!("<row r=\"{}\">", r);
+        self.row_buf.clear();
+        self.row_buf.push_str("<row r=\"");
+        let mut itoa_buf = itoa::Buffer::new();
+        self.row_buf.push_str(itoa_buf.format(r));
+        self.row_buf.push_str("\">");
         for (idx, val) in row_values.iter().enumerate() {
             let c = (idx + 1) as u32;
-            write_cell(r, c, val, &mut row_str);
+            write_cell(r, c, val, &mut self.row_buf);
         }
-        row_str.push_str("</row>\n");
+        self.row_buf.push_str("</row>\n");
         self.writer
-            .write_all(row_str.as_bytes())
+            .write_all(self.row_buf.as_bytes())
             .map_err(|e| PyxlError::IoError(format!("Write error: {}", e)))?;
         Ok(())
     }
@@ -361,18 +385,17 @@ fn generate_worksheet_xml(ws: &Worksheet) -> PyxlResult<String> {
     let min_c = ws.min_column();
     let max_c = ws.max_column();
 
-    let start_coord = tuple_to_coordinate(min_r, min_c)?;
-    let end_coord = tuple_to_coordinate(max_r, max_c)?;
+    let cell_count = ws.cell_count();
+    let estimated_size = 512 + cell_count * 45;
+    let mut s = String::with_capacity(estimated_size);
 
-    let mut s = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
-        <worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\n  \
-        <dimension ref=\"{}:{}\"/>\n  \
-        <sheetData>\n",
-        start_coord, end_coord
-    );
+    s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\n  <dimension ref=\"");
+    write_coordinate(min_r, min_c, &mut s)?;
+    s.push(':');
+    write_coordinate(max_r, max_c, &mut s)?;
+    s.push_str("\"/>\n  <sheetData>\n");
 
-    // Group cells by row in ascending order
+    let mut itoa_buf = itoa::Buffer::new();
     let mut current_row = 0;
     for (&(r, c), cell) in ws.cells() {
         if r != current_row {
@@ -380,7 +403,9 @@ fn generate_worksheet_xml(ws: &Worksheet) -> PyxlResult<String> {
                 s.push_str("</row>\n");
             }
             current_row = r;
-            s.push_str(&format!("    <row r=\"{}\">", r));
+            s.push_str("    <row r=\"");
+            s.push_str(itoa_buf.format(r));
+            s.push_str("\">");
         }
         write_cell(r, c, &cell.value, &mut s);
     }
@@ -392,105 +417,126 @@ fn generate_worksheet_xml(ws: &Worksheet) -> PyxlResult<String> {
     Ok(s)
 }
 
+#[inline]
+fn write_cell_open(row: u32, col: u32, out: &mut String) {
+    out.push_str("<c r=\"");
+    let _ = write_coordinate(row, col, out);
+}
+
 fn write_cell(row: u32, col: u32, val: &CellValue, out: &mut String) {
-    if let Ok(coord) = tuple_to_coordinate(row, col) {
-        match val {
-            CellValue::Empty => {}
-            CellValue::String(s) => {
-                out.push_str("<c r=\"");
-                out.push_str(&coord);
+    match val {
+        CellValue::Empty => {}
+        CellValue::String(s) => {
+            write_cell_open(row, col, out);
+            out.push_str("\" t=\"inlineStr\"><is><t>");
+            write_xml_escaped(s, out);
+            out.push_str("</t></is></c>");
+        }
+        CellValue::Int(i) => {
+            write_cell_open(row, col, out);
+            out.push_str("\" t=\"n\"><v>");
+            let mut itoa_buf = itoa::Buffer::new();
+            out.push_str(itoa_buf.format(*i));
+            out.push_str("</v></c>");
+        }
+        CellValue::Float(f) => {
+            write_cell_open(row, col, out);
+            out.push_str("\" t=\"n\"><v>");
+            let mut ryu_buf = ryu::Buffer::new();
+            out.push_str(ryu_buf.format(*f));
+            out.push_str("</v></c>");
+        }
+        CellValue::Bool(b) => {
+            write_cell_open(row, col, out);
+            out.push_str("\" t=\"b\"><v>");
+            out.push(if *b { '1' } else { '0' });
+            out.push_str("</v></c>");
+        }
+        CellValue::Date(s) | CellValue::DateTime(s) => {
+            if let Some(serial) = date_to_excel_serial(s) {
+                write_cell_open(row, col, out);
+                out.push_str("\" s=\"1\"><v>");
+                let mut ryu_buf = ryu::Buffer::new();
+                out.push_str(ryu_buf.format(serial));
+                out.push_str("</v></c>");
+            } else {
+                write_cell_open(row, col, out);
                 out.push_str("\" t=\"inlineStr\"><is><t>");
                 write_xml_escaped(s, out);
                 out.push_str("</t></is></c>");
             }
-            CellValue::Int(i) => {
-                out.push_str("<c r=\"");
-                out.push_str(&coord);
-                out.push_str("\" t=\"n\"><v>");
-                out.push_str(&i.to_string());
-                out.push_str("</v></c>");
-            }
-            CellValue::Float(f) => {
-                out.push_str("<c r=\"");
-                out.push_str(&coord);
-                out.push_str("\" t=\"n\"><v>");
-                out.push_str(&f.to_string());
-                out.push_str("</v></c>");
-            }
-            CellValue::Bool(b) => {
-                out.push_str("<c r=\"");
-                out.push_str(&coord);
-                out.push_str("\" t=\"b\"><v>");
-                out.push(if *b { '1' } else { '0' });
-                out.push_str("</v></c>");
-            }
-            CellValue::Date(s) | CellValue::DateTime(s) => {
-                if let Some(serial) = date_to_excel_serial(s) {
-                    out.push_str("<c r=\"");
-                    out.push_str(&coord);
-                    out.push_str("\" s=\"1\"><v>");
-                    out.push_str(&serial.to_string());
-                    out.push_str("</v></c>");
-                } else {
-                    out.push_str("<c r=\"");
-                    out.push_str(&coord);
-                    out.push_str("\" t=\"inlineStr\"><is><t>");
-                    write_xml_escaped(s, out);
-                    out.push_str("</t></is></c>");
-                }
-            }
-            CellValue::Formula {
-                formula,
-                cached_value,
-            } => {
-                let formula_clean = formula.trim_start_matches('=');
-                out.push_str("<c r=\"");
-                out.push_str(&coord);
-                out.push_str("\"><f>");
-                write_xml_escaped(formula_clean, out);
-                out.push_str("</f>");
-                if let Some(cached) = cached_value {
-                    match cached.as_ref() {
-                        CellValue::Int(i) => {
-                            out.push_str("<v>");
-                            out.push_str(&i.to_string());
-                            out.push_str("</v>");
-                        }
-                        CellValue::Float(f) => {
-                            out.push_str("<v>");
-                            out.push_str(&f.to_string());
-                            out.push_str("</v>");
-                        }
-                        CellValue::String(s) => {
-                            out.push_str("<v>");
-                            write_xml_escaped(s, out);
-                            out.push_str("</v>");
-                        }
-                        CellValue::Bool(b) => {
-                            out.push_str("<v>");
-                            out.push(if *b { '1' } else { '0' });
-                            out.push_str("</v>");
-                        }
-                        _ => out.push_str("<v/>"),
+        }
+        CellValue::Formula {
+            formula,
+            cached_value,
+        } => {
+            let formula_clean = formula.trim_start_matches('=');
+            write_cell_open(row, col, out);
+            out.push_str("\"><f>");
+            write_xml_escaped(formula_clean, out);
+            out.push_str("</f>");
+            if let Some(cached) = cached_value {
+                match cached.as_ref() {
+                    CellValue::Int(i) => {
+                        out.push_str("<v>");
+                        let mut itoa_buf = itoa::Buffer::new();
+                        out.push_str(itoa_buf.format(*i));
+                        out.push_str("</v>");
                     }
-                } else {
-                    out.push_str("<v/>");
+                    CellValue::Float(f) => {
+                        out.push_str("<v>");
+                        let mut ryu_buf = ryu::Buffer::new();
+                        out.push_str(ryu_buf.format(*f));
+                        out.push_str("</v>");
+                    }
+                    CellValue::String(s) => {
+                        out.push_str("<v>");
+                        write_xml_escaped(s, out);
+                        out.push_str("</v>");
+                    }
+                    CellValue::Bool(b) => {
+                        out.push_str("<v>");
+                        out.push(if *b { '1' } else { '0' });
+                        out.push_str("</v>");
+                    }
+                    _ => out.push_str("<v/>"),
                 }
-                out.push_str("</c>");
+            } else {
+                out.push_str("<v/>");
             }
+            out.push_str("</c>");
         }
     }
 }
 
+#[inline]
 fn write_xml_escaped(s: &str, out: &mut String) {
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
+    let bytes = s.as_bytes();
+    let mut last_idx = 0;
+
+    for (idx, &b) in bytes.iter().enumerate() {
+        let esc = match b {
+            b'&' => "&amp;",
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            b'"' => "&quot;",
+            b'\'' => "&apos;",
+            _ => continue,
+        };
+        if idx > last_idx {
+            if let Ok(sub) = std::str::from_utf8(&bytes[last_idx..idx]) {
+                out.push_str(sub);
+            }
+        }
+        out.push_str(esc);
+        last_idx = idx + 1;
+    }
+
+    if last_idx == 0 {
+        out.push_str(s);
+    } else if last_idx < bytes.len() {
+        if let Ok(sub) = std::str::from_utf8(&bytes[last_idx..]) {
+            out.push_str(sub);
         }
     }
 }

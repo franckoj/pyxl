@@ -60,6 +60,10 @@ impl Worksheet {
         self.cells.len()
     }
 
+    pub fn cells(&self) -> &BTreeMap<(u32, u32), Cell> {
+        &self.cells
+    }
+
     pub fn dimensions(&self) -> PyxlResult<String> {
         let min_r = self.min_row();
         let max_r = self.max_row();

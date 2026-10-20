@@ -2,9 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use pyo3::exceptions::{
-    PyIndexError, PyKeyError, PyNotImplementedError, PyTypeError, PyValueError,
-};
+use pyo3::exceptions::{PyAttributeError, PyIndexError, PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyFloat, PyInt, PyList, PyString, PyTuple};
 
@@ -15,7 +13,8 @@ use pyxl_core::coordinate::{
 use pyxl_core::error::{PyxlError, PyxlResult};
 use pyxl_core::workbook::Workbook;
 use pyxl_ooxml::{
-    read_single_cell, SharedStringsTable, SheetInfo, StreamingRowReader, Styles, XlsxPackage,
+    read_single_cell, save_workbook, save_write_only_workbook, SharedStringsTable, SheetInfo,
+    StreamingRowReader, Styles, WriteOnlySheet, XlsxPackage,
 };
 
 pub fn map_pyxl_err(err: PyxlError) -> PyErr {
@@ -319,6 +318,32 @@ impl PyWorksheet {
         py: Python<'py>,
         key: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        if let Ok(r) = key.extract::<u32>() {
+            let max_c = {
+                let wb = self.wb.read();
+                let title = self.sheet_title.read().clone();
+                let ws = wb
+                    .get_sheet(&title)
+                    .ok_or_else(|| PyxlError::SheetNotFound(title.clone()))
+                    .map_err(map_pyxl_err)?;
+                ws.max_column().max(1)
+            };
+            let mut inner_cols = Vec::with_capacity(max_c as usize);
+            for c in 1..=max_c {
+                let cell = Bound::new(
+                    py,
+                    PyCell {
+                        wb: Arc::clone(&self.wb),
+                        sheet_title: Arc::clone(&self.sheet_title),
+                        row: r,
+                        column: c,
+                    },
+                )?;
+                inner_cols.push(cell.into_any());
+            }
+            return Ok(PyTuple::new_bound(py, inner_cols).into_any());
+        }
+
         let key_str = key.extract::<String>()?;
         if key_str.contains(':') {
             let (min_r, min_c, max_r, max_c) = range_boundaries(&key_str).map_err(map_pyxl_err)?;
@@ -566,6 +591,11 @@ impl PyWorkbook {
     }
 
     #[getter]
+    pub fn write_only(&self) -> bool {
+        false
+    }
+
+    #[getter]
     pub fn data_only(&self) -> bool {
         self.wb.read().is_data_only()
     }
@@ -698,10 +728,17 @@ impl PyWorkbook {
         Ok(false)
     }
 
-    pub fn save(&self, _path: &str) -> PyResult<()> {
-        Err(PyNotImplementedError::new_err(
-            "Workbook saving will be implemented in Phase 3 (High-Performance XLSX Writer)",
-        ))
+    pub fn save(&self, path: &Bound<'_, PyAny>) -> PyResult<()> {
+        let path_str: String = if let Ok(s) = path.extract::<String>() {
+            s
+        } else if let Ok(fspath) = path.call_method0("__fspath__") {
+            fspath.extract::<String>()?
+        } else {
+            path.str()?.to_string()
+        };
+
+        let wb = self.wb.read();
+        save_workbook(&path_str, &wb).map_err(map_pyxl_err)
     }
 
     pub fn __repr__(&self) -> String {
@@ -796,7 +833,7 @@ pub type StreamingRowMessage = PyxlResult<Option<Vec<(u32, CellValue)>>>;
 pub struct PyRowIterator {
     rx: std::sync::mpsc::Receiver<StreamingRowMessage>,
     min_col: u32,
-    max_col: u32,
+    max_col: Option<u32>,
     values_only: bool,
     data_only: bool,
     current_row_idx: u32,
@@ -814,7 +851,10 @@ impl PyRowIterator {
                 let row_num = self.current_row_idx;
                 self.current_row_idx += 1;
 
-                let width = (self.max_col - self.min_col + 1) as usize;
+                let effective_max_col = self
+                    .max_col
+                    .unwrap_or_else(|| cells.iter().map(|(c, _)| *c).max().unwrap_or(self.min_col));
+                let width = (effective_max_col.saturating_sub(self.min_col) + 1) as usize;
                 let mut cell_map = HashMap::with_capacity(cells.len());
                 for (col, val) in cells {
                     cell_map.insert(col, val);
@@ -822,7 +862,7 @@ impl PyRowIterator {
 
                 let mut row_items = Vec::with_capacity(width);
                 if self.values_only {
-                    for col in self.min_col..=self.max_col {
+                    for col in self.min_col..=effective_max_col {
                         if let Some(val) = cell_map.remove(&col) {
                             let resolved = match val {
                                 CellValue::Formula {
@@ -846,7 +886,7 @@ impl PyRowIterator {
                         }
                     }
                 } else {
-                    for col in self.min_col..=self.max_col {
+                    for col in self.min_col..=effective_max_col {
                         let coord = tuple_to_coordinate(row_num, col).map_err(map_pyxl_err)?;
                         let col_letter = get_column_letter(col).map_err(map_pyxl_err)?;
                         if let Some(val) = cell_map.remove(&col) {
@@ -911,10 +951,10 @@ pub struct PyReadOnlyWorksheet {
     target_path: String,
     shared_strings: Arc<SharedStringsTable>,
     styles: Arc<Styles>,
-    min_row: u32,
-    max_row: u32,
-    min_col: u32,
-    max_col: u32,
+    min_row: Option<u32>,
+    max_row: Option<u32>,
+    min_col: Option<u32>,
+    max_col: Option<u32>,
     data_only: bool,
 }
 
@@ -926,29 +966,31 @@ impl PyReadOnlyWorksheet {
     }
 
     #[getter]
-    pub fn min_row(&self) -> u32 {
+    pub fn min_row(&self) -> Option<u32> {
         self.min_row
     }
 
     #[getter]
-    pub fn max_row(&self) -> u32 {
+    pub fn max_row(&self) -> Option<u32> {
         self.max_row
     }
 
     #[getter]
-    pub fn min_column(&self) -> u32 {
+    pub fn min_column(&self) -> Option<u32> {
         self.min_col
     }
 
     #[getter]
-    pub fn max_column(&self) -> u32 {
+    pub fn max_column(&self) -> Option<u32> {
         self.max_col
     }
 
     #[getter]
     pub fn dimensions(&self) -> PyResult<String> {
-        let start = tuple_to_coordinate(self.min_row, self.min_col).map_err(map_pyxl_err)?;
-        let end = tuple_to_coordinate(self.max_row, self.max_col).map_err(map_pyxl_err)?;
+        let start = tuple_to_coordinate(self.min_row.unwrap_or(1), self.min_col.unwrap_or(1))
+            .map_err(map_pyxl_err)?;
+        let end = tuple_to_coordinate(self.max_row.unwrap_or(1), self.max_col.unwrap_or(1))
+            .map_err(map_pyxl_err)?;
         Ok(format!("{}:{}", start, end))
     }
 
@@ -1032,10 +1074,11 @@ impl PyReadOnlyWorksheet {
         max_col: Option<u32>,
         values_only: bool,
     ) -> PyResult<PyRowIterator> {
-        let r_start = min_row.unwrap_or(self.min_row);
-        let r_end = max_row.unwrap_or(self.max_row);
-        let c_start = min_col.unwrap_or(self.min_col);
-        let c_end = max_col.unwrap_or(self.max_col);
+        let r_start = min_row.or(self.min_row).unwrap_or(1);
+        let r_end = max_row.or(self.max_row).unwrap_or(1_048_576);
+        let c_start = min_col.or(self.min_col).unwrap_or(1);
+        let c_end_filter = max_col.or(self.max_col).unwrap_or(16_384);
+        let c_end_spec = max_col.or(self.max_col);
 
         let (tx, rx) =
             std::sync::mpsc::sync_channel::<PyxlResult<Option<Vec<(u32, CellValue)>>>>(64);
@@ -1083,7 +1126,7 @@ impl PyReadOnlyWorksheet {
                 r_start,
                 r_end,
                 c_start,
-                c_end,
+                c_end_filter,
                 data_only,
             );
 
@@ -1109,19 +1152,13 @@ impl PyReadOnlyWorksheet {
                     }
                 }
             }
-            while next_expected <= r_end {
-                if tx.send(Ok(Some(Vec::new()))).is_err() {
-                    return;
-                }
-                next_expected += 1;
-            }
             let _ = tx.send(Ok(None));
         });
 
         Ok(PyRowIterator {
             rx,
             min_col: c_start,
-            max_col: c_end,
+            max_col: c_end_spec,
             values_only,
             data_only: self.data_only,
             current_row_idx: r_start,
@@ -1357,5 +1394,227 @@ pub fn load_workbook<'py>(
             wb: Arc::new(RwLock::new(wb)),
         };
         Ok(Bound::new(py, py_wb)?.into_any())
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Write-Only Streaming Implementation
+// -----------------------------------------------------------------------------
+
+#[pyclass(name = "WriteOnlyWorksheet")]
+pub struct PyWriteOnlyWorksheet {
+    sheet: Arc<RwLock<WriteOnlySheet>>,
+}
+
+#[pymethods]
+impl PyWriteOnlyWorksheet {
+    #[getter]
+    pub fn title(&self) -> String {
+        self.sheet.read().title().to_string()
+    }
+
+    #[setter]
+    pub fn set_title(&self, title: String) {
+        self.sheet.write().set_title(&title);
+    }
+
+    pub fn append(&self, iterable: &Bound<'_, PyAny>) -> PyResult<()> {
+        let mut values = Vec::new();
+        for item in iterable.iter()? {
+            let item_val = item?;
+            values.push(python_value_to_cell_value(&item_val)?);
+        }
+
+        let mut sheet = self.sheet.write();
+        sheet.append_row(&values).map_err(map_pyxl_err)
+    }
+
+    pub fn close(&self) -> PyResult<()> {
+        Ok(())
+    }
+
+    pub fn __getitem__(&self, _key: &Bound<'_, PyAny>) -> PyResult<()> {
+        Err(PyTypeError::new_err(
+            "'WriteOnlyWorksheet' object is not subscriptable",
+        ))
+    }
+
+    #[pyo3(signature = (_row=1, _column=1, _value=None))]
+    pub fn cell(&self, _row: u32, _column: u32, _value: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
+        Err(PyAttributeError::new_err(
+            "'WriteOnlyWorksheet' object has no attribute 'cell'",
+        ))
+    }
+
+    pub fn iter_rows(&self) -> PyResult<()> {
+        Err(PyAttributeError::new_err(
+            "'WriteOnlyWorksheet' object has no attribute 'iter_rows'",
+        ))
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!("<WriteOnlyWorksheet {:?}>", self.sheet.read().title())
+    }
+}
+
+#[pyclass(name = "WriteOnlyWorkbook")]
+pub struct PyWriteOnlyWorkbook {
+    sheets: Vec<Arc<RwLock<WriteOnlySheet>>>,
+    closed: bool,
+}
+
+#[pymethods]
+impl PyWriteOnlyWorkbook {
+    #[new]
+    pub fn new() -> Self {
+        Self {
+            sheets: Vec::new(),
+            closed: false,
+        }
+    }
+
+    #[getter]
+    pub fn write_only(&self) -> bool {
+        true
+    }
+
+    #[getter]
+    pub fn read_only(&self) -> bool {
+        false
+    }
+
+    #[getter]
+    pub fn sheetnames(&self) -> Vec<String> {
+        self.sheets
+            .iter()
+            .map(|s| s.read().title().to_string())
+            .collect()
+    }
+
+    #[getter]
+    pub fn worksheets(&self) -> Vec<PyWriteOnlyWorksheet> {
+        self.sheets
+            .iter()
+            .map(|s| PyWriteOnlyWorksheet {
+                sheet: Arc::clone(s),
+            })
+            .collect()
+    }
+
+    #[pyo3(signature = (title=None, index=None))]
+    pub fn create_sheet(
+        &mut self,
+        title: Option<String>,
+        index: Option<usize>,
+    ) -> PyResult<PyWriteOnlyWorksheet> {
+        if self.closed {
+            return Err(PyValueError::new_err("Workbook is closed"));
+        }
+
+        let sheet_title = title.unwrap_or_else(|| format!("Sheet{}", self.sheets.len() + 1));
+
+        let sheet = WriteOnlySheet::new(&sheet_title).map_err(map_pyxl_err)?;
+        let sheet_arc = Arc::new(RwLock::new(sheet));
+
+        if let Some(idx) = index {
+            if idx < self.sheets.len() {
+                self.sheets.insert(idx, Arc::clone(&sheet_arc));
+            } else {
+                self.sheets.push(Arc::clone(&sheet_arc));
+            }
+        } else {
+            self.sheets.push(Arc::clone(&sheet_arc));
+        }
+
+        Ok(PyWriteOnlyWorksheet { sheet: sheet_arc })
+    }
+
+    pub fn __getitem__(&self, key: &Bound<'_, PyAny>) -> PyResult<PyWriteOnlyWorksheet> {
+        if let Ok(name) = key.extract::<String>() {
+            for sheet in &self.sheets {
+                if sheet.read().title() == name {
+                    return Ok(PyWriteOnlyWorksheet {
+                        sheet: Arc::clone(sheet),
+                    });
+                }
+            }
+            Err(PyKeyError::new_err(format!(
+                "Worksheet {} does not exist.",
+                name
+            )))
+        } else if let Ok(idx) = key.extract::<isize>() {
+            let len = self.sheets.len() as isize;
+            let norm_idx = if idx < 0 { len + idx } else { idx };
+            if norm_idx >= 0 && (norm_idx as usize) < self.sheets.len() {
+                Ok(PyWriteOnlyWorksheet {
+                    sheet: Arc::clone(&self.sheets[norm_idx as usize]),
+                })
+            } else {
+                Err(PyIndexError::new_err("Worksheet index out of range"))
+            }
+        } else {
+            Err(PyTypeError::new_err("Sheet key must be str or int"))
+        }
+    }
+
+    pub fn save(&mut self, path: &Bound<'_, PyAny>) -> PyResult<()> {
+        if self.closed {
+            return Err(PyValueError::new_err("Workbook is closed"));
+        }
+        if self.sheets.is_empty() {
+            return Err(PyValueError::new_err(
+                "Cannot save empty write-only workbook",
+            ));
+        }
+
+        let path_str: String = if let Ok(s) = path.extract::<String>() {
+            s
+        } else if let Ok(fspath) = path.call_method0("__fspath__") {
+            fspath.extract::<String>()?
+        } else {
+            path.str()?.to_string()
+        };
+
+        let mut sheet_guards: Vec<_> = self.sheets.iter().map(|s| s.write()).collect();
+        let mut refs: Vec<&mut WriteOnlySheet> =
+            sheet_guards.iter_mut().map(|g| &mut **g).collect();
+
+        save_write_only_workbook(&path_str, &mut refs).map_err(map_pyxl_err)
+    }
+
+    pub fn close(&mut self) -> PyResult<()> {
+        self.closed = true;
+        self.sheets.clear();
+        Ok(())
+    }
+
+    pub fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
+    pub fn __exit__(
+        &mut self,
+        _exc_type: Option<&Bound<'_, PyAny>>,
+        _exc_val: Option<&Bound<'_, PyAny>>,
+        _exc_tb: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<bool> {
+        self.close()?;
+        Ok(false)
+    }
+
+    pub fn __repr__(&self) -> String {
+        let titles: Vec<String> = self
+            .sheets
+            .iter()
+            .map(|s| s.read().title().to_string())
+            .collect();
+        format!("<WriteOnlyWorkbook sheetnames={:?}>", titles)
+    }
+}
+
+impl Default for PyWriteOnlyWorkbook {
+    fn default() -> Self {
+        Self::new()
     }
 }

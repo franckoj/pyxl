@@ -23,10 +23,10 @@ pub struct SheetInfo {
     pub sheet_id: u32,
     pub r_id: String,
     pub target_path: String,
-    pub min_row: u32,
-    pub max_row: u32,
-    pub min_col: u32,
-    pub max_col: u32,
+    pub min_row: Option<u32>,
+    pub max_row: Option<u32>,
+    pub min_col: Option<u32>,
+    pub max_col: Option<u32>,
 }
 
 pub struct XlsxPackage<R: Read + Seek> {
@@ -72,17 +72,17 @@ impl<R: Read + Seek> XlsxPackage<R> {
                 .cloned()
                 .unwrap_or_else(|| format!("worksheets/sheet{}.xml", meta.sheet_id));
             let full_target = normalize_zip_path(&base_dir, &rel_target);
-            let (min_r, min_c, max_r, max_c) = peek_sheet_dimension(&mut archive, &full_target);
+            let dim = peek_sheet_dimension(&mut archive, &full_target);
 
             sheets.push(SheetInfo {
                 name: meta.name,
                 sheet_id: meta.sheet_id,
                 r_id: meta.r_id,
                 target_path: full_target,
-                min_row: min_r,
-                max_row: max_r,
-                min_col: min_c,
-                max_col: max_c,
+                min_row: dim.map(|d| d.0),
+                max_row: dim.map(|d| d.2),
+                min_col: dim.map(|d| d.1),
+                max_col: dim.map(|d| d.3),
             });
         }
 
@@ -198,10 +198,10 @@ impl<R: Read + Seek> XlsxPackage<R> {
 fn peek_sheet_dimension<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     target_path: &str,
-) -> (u32, u32, u32, u32) {
+) -> Option<(u32, u32, u32, u32)> {
     let file = match archive.by_name(target_path) {
         Ok(f) => f,
-        Err(_) => return (1, 1, 1, 1),
+        Err(_) => return None,
     };
     let mut xml_reader = Reader::from_reader(BufReader::new(file));
     let mut buf = Vec::new();
@@ -213,7 +213,7 @@ fn peek_sheet_dimension<R: Read + Seek>(
                         if attr.key.local_name().as_ref() == b"ref" {
                             if let Ok(val) = std::str::from_utf8(&attr.value) {
                                 if let Ok((min_r, min_c, max_r, max_c)) = range_boundaries(val) {
-                                    return (min_r, min_c, max_r, max_c);
+                                    return Some((min_r, min_c, max_r, max_c));
                                 }
                             }
                         }
@@ -227,7 +227,7 @@ fn peek_sheet_dimension<R: Read + Seek>(
         }
         buf.clear();
     }
-    (1, 1, 1, 1)
+    None
 }
 
 // Helpers for OOXML discovery
